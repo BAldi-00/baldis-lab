@@ -21,6 +21,10 @@ export interface GlassShape {
   stem?:   { top: number; bottom: number; w: number };
   foot?:   { y: number; r: number };
   ice:     'rock' | 'cubes' | 'tall' | 'none';            // default ice look
+  tumbler?: boolean;   // straight outer wall running down to a thick glass bottom
+  /** Outer silhouette [y, r] below the bowl, down to the bottom of a solid
+   *  glass base (Glencairn): bowl → short solid neck → flared foot. */
+  pedestal?: [number, number][];
 }
 
 export const SHAPES: Record<GlassId, GlassShape> = {
@@ -28,21 +32,25 @@ export const SHAPES: Record<GlassId, GlassShape> = {
     profile: [[44, 33], [100, 30], [104, 29]],
     base: { top: 104, bottom: 114, r: 30 },
     ice: 'rock',
+    tumbler: true,
   },
   highball: {
     profile: [[12, 23], [108, 21], [111, 20]],
     base: { top: 111, bottom: 118, r: 21 },
     ice: 'cubes',
+    tumbler: true,
   },
   collins: {
     profile: [[6, 19], [111, 18], [113, 17]],
     base: { top: 113, bottom: 119, r: 18 },
     ice: 'tall',
+    tumbler: true,
   },
   shot: {
     profile: [[66, 18], [106, 14], [108, 13]],
     base: { top: 108, bottom: 118, r: 14 },
     ice: 'none',
+    tumbler: true,
   },
   martini: {
     profile: [[30, 43], [76, 2.5], [78, 0.5]],
@@ -80,10 +88,12 @@ export const SHAPES: Record<GlassId, GlassShape> = {
     foot: { y: 114, r: 22 },
     ice: 'cubes',
   },
+  // Glencairn (114 mm tall, 46 mm mouth, ~65 mm belly, 52 mm foot): a tulip
+  // bowl that tapers into a near-vertical chimney with a slight flare at the
+  // lip, sitting on a solid glass neck and a thick round foot.
   whisky: {
-    profile: [[36, 14], [46, 15], [60, 21], [74, 25], [86, 22.5], [94, 15], [98, 3]],
-    base: { top: 98, bottom: 110, r: 16 },
-    foot: { y: 112, r: 21 },
+    profile: [[30, 18.2], [33, 17.4], [38, 17], [44, 17.6], [52, 19.8], [62, 22.8], [72, 24.7], [80, 25], [87, 23.6], [92, 20], [95.5, 14], [97.5, 6], [98, 1]],
+    pedestal: [[92, 20.5], [95.5, 16.8], [99, 13.4], [102, 11.4], [105, 11], [108, 12.6], [111, 16.5], [113, 20.5], [114.5, 21.6], [119.5, 21.6], [121, 20.6]],
     ice: 'none',
   },
 };
@@ -111,6 +121,35 @@ export function bowlPath(s: GlassShape): string {
   const right = [...s.profile].reverse().map(([y, r]) => [CX + r, y] as [number, number]);
   const pts = [...left, ...right];
   return smooth(pts) + ' Z';
+}
+
+/**
+ * Outline of the glass for drawing (not for the liquid clip):
+ * - `stroke` is open at the top, so no line crosses the rim ellipse;
+ * - tumblers get a straight outer wall that runs down to the bottom of the
+ *   thick glass base, instead of a bowl that tucks in above a separate block.
+ */
+export function outlinePaths(s: GlassShape): { fill: string; stroke: string } {
+  if (s.tumbler && s.base) {
+    const [y0, r0] = s.profile[0], [y1, r1] = s.profile[1];
+    const bb = s.base.bottom, c = 3;
+    const rb = r0 + ((r1 - r0) * (bb - y0)) / (y1 - y0);      // wall extended to the base
+    const rc = r0 + ((r1 - r0) * (bb - c - y0)) / (y1 - y0);
+    const d = `M${f(CX - r0)},${f(y0)} L${f(CX - rc)},${f(bb - c)} Q${f(CX - rb)},${f(bb)} ${f(CX - rb + c)},${f(bb)}`
+      + ` L${f(CX + rb - c)},${f(bb)} Q${f(CX + rb)},${f(bb)} ${f(CX + rc)},${f(bb - c)} L${f(CX + r0)},${f(y0)}`;
+    return { fill: d + ' Z', stroke: d };
+  }
+  if (s.pedestal) {
+    const yb = s.pedestal[s.pedestal.length - 1][0];
+    const side = [...s.profile.filter(([y]) => y < s.pedestal![0][0]), ...s.pedestal];
+    const left  = side.map(([y, r]) => [CX - r, y] as [number, number]);
+    const right = [...side].reverse().map(([y, r]) => [CX + r, y] as [number, number]);
+    // the foot's bottom sags a little: it is the near half of an ellipse
+    const d = smooth([...left, [CX, yb + 1.4], ...right]);
+    return { fill: d + ' Z', stroke: d };
+  }
+  const bowl = bowlPath(s);
+  return { fill: bowl, stroke: bowl.replace(/ Z$/, '') };
 }
 
 /** One side of the bowl wall, for the specular highlight stroke. */
@@ -171,3 +210,11 @@ export function levelY(s: GlassShape, frac: number): number {
 export const rimY    = (s: GlassShape) => s.profile[0][0];
 export const bottomY = (s: GlassShape) => s.profile[s.profile.length - 1][0];
 export const rimR    = (s: GlassShape) => s.profile[0][1];
+
+/** Where the glass meets the table, and how wide it is there (for the shadow). */
+export function standOn(s: GlassShape): { y: number; r: number } {
+  if (s.foot) return { y: s.foot.y, r: s.foot.r };
+  if (s.pedestal) return { y: s.pedestal[s.pedestal.length - 1][0], r: Math.max(...s.pedestal.map(([, r]) => r)) };
+  if (s.base) return { y: s.base.bottom, r: s.base.r };
+  return { y: bottomY(s), r: rimR(s) };
+}

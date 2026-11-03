@@ -102,8 +102,14 @@ export default function SimulatorPage() {
   // Refs read by the pour loop
   const freeRef = useRef(free);
   freeRef.current = free;
+  // Set on every (re)mount: StrictMode and Fast Refresh run the cleanup and
+  // then the effect again on the same refs, and a flag left at false would
+  // drop every timer below (pour stream and bar spoon stuck on screen).
   const alive = useRef(true);
-  useEffect(() => () => { alive.current = false; }, []);
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; };
+  }, []);
 
   // ── Toast ──
   const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -151,7 +157,7 @@ export default function SimulatorPage() {
   };
 
   const onPressStart = (ing: Ingredient, e: React.PointerEvent) => {
-    if (autoPouring) return;
+    if (autoPouring || mixing) return;
     e.currentTarget.setPointerCapture(e.pointerId);
     stopPour();
     const p: NonNullable<typeof press.current> = { ing, streaming: false };
@@ -267,6 +273,9 @@ export default function SimulatorPage() {
       await wait(160);
     }
     const tech = techniqueOf(target);
+    // Building in the glass mixes spirits, juices and sodas as they go in;
+    // only heavy syrups (grenadine) sink. Same rule as the recipe art.
+    if (tech === 'build') setParts(p => p.map(x => (physics(x.name).density < 1.25 ? { ...x, mixed: true } : x)));
     setGarnish(garnishFor(target.garnish));
     setAutoPouring(false);
     if (tech === 'shake' || tech === 'stir') say(tech === 'shake' ? 'Ora shakeralo!' : 'Ora mescolalo!');
@@ -396,7 +405,7 @@ export default function SimulatorPage() {
               <button key={id} onClick={() => changeGlass(id)} aria-pressed={glassId === id}
                 className={`flex w-[76px] shrink-0 flex-col items-center rounded-2xl border px-1 pb-2 pt-1 transition-colors ${glassId === id ? 'border-accent/60 bg-accent/10 text-accent' : 'border-line/[0.07] text-muted hover:border-line/20 hover:text-text'}`}>
                 <Glass glass={id} layers={[]} capacity={GLASSES[id].capacity} className="h-14 w-14" title={GLASSES[id].name} />
-                <span className="w-full truncate text-center text-[11px]">{GLASSES[id].name.replace('Coppa ', '').replace('Calice ', '')}</span>
+                <span className="w-full truncate text-center text-[11px]">{GLASSES[id].name.replace(/^(Coppa|Calice da) (.)/, (_, _p, ch: string) => ch.toUpperCase())}</span>
               </button>
             ))}
           </div>
@@ -425,7 +434,7 @@ export default function SimulatorPage() {
                     onPointerCancel={stopPour}
                     onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); quickAdd(ing); } }}
                     onContextMenu={e => e.preventDefault()}
-                    disabled={autoPouring}
+                    disabled={autoPouring || !!mixing}
                     className="flex w-full touch-none select-none items-center gap-3 rounded-xl px-2 py-2 text-left transition-colors hover:bg-line/5 active:bg-accent/10"
                   >
                     <span className="h-7 w-3 shrink-0 rounded-full ring-1 ring-line/25" style={{ background: ing.color }} />
