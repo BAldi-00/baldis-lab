@@ -25,10 +25,9 @@ interface Props {
 
 function CocktailArtImpl({ cocktail: c, className = '', backdrop = true }: Props) {
   const { layers, ice, fizzy, rim, foam } = useMemo(() => artLayers(c), [c]);
-  const total = layers.reduce((s, l) => s + l.amount, 0);
+  // Real glass capacity, like the simulator: the recipe sits at the same
+  // level here and in "Versa per me"
   const capacity = GLASSES[c.glass]?.capacity ?? 300;
-  // Show the drink as served: between 55% and 85% of the glass
-  const shown = Math.max(total * 1.15, Math.min(capacity, total / 0.55));
   const tint = parseColor(c.color);
   const t = `${tint.r},${tint.g},${tint.b}`;
 
@@ -43,7 +42,7 @@ function CocktailArtImpl({ cocktail: c, className = '', backdrop = true }: Props
       <Glass
         glass={c.glass}
         layers={layers}
-        capacity={shown}
+        capacity={capacity}
         ice={ice}
         fizzy={fizzy}
         rim={rim}
