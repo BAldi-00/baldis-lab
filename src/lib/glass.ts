@@ -21,6 +21,7 @@ export interface GlassShape {
   stem?:   { top: number; bottom: number; w: number };
   foot?:   { y: number; r: number };
   ice:     'rock' | 'cubes' | 'tall' | 'none';            // default ice look
+  tumbler?: boolean;   // straight outer wall running down to a thick glass bottom
 }
 
 export const SHAPES: Record<GlassId, GlassShape> = {
@@ -28,21 +29,25 @@ export const SHAPES: Record<GlassId, GlassShape> = {
     profile: [[44, 33], [100, 30], [104, 29]],
     base: { top: 104, bottom: 114, r: 30 },
     ice: 'rock',
+    tumbler: true,
   },
   highball: {
     profile: [[12, 23], [108, 21], [111, 20]],
     base: { top: 111, bottom: 118, r: 21 },
     ice: 'cubes',
+    tumbler: true,
   },
   collins: {
     profile: [[6, 19], [111, 18], [113, 17]],
     base: { top: 113, bottom: 119, r: 18 },
     ice: 'tall',
+    tumbler: true,
   },
   shot: {
     profile: [[66, 18], [106, 14], [108, 13]],
     base: { top: 108, bottom: 118, r: 14 },
     ice: 'none',
+    tumbler: true,
   },
   martini: {
     profile: [[30, 43], [76, 2.5], [78, 0.5]],
@@ -111,6 +116,26 @@ export function bowlPath(s: GlassShape): string {
   const right = [...s.profile].reverse().map(([y, r]) => [CX + r, y] as [number, number]);
   const pts = [...left, ...right];
   return smooth(pts) + ' Z';
+}
+
+/**
+ * Outline of the glass for drawing (not for the liquid clip):
+ * - `stroke` is open at the top, so no line crosses the rim ellipse;
+ * - tumblers get a straight outer wall that runs down to the bottom of the
+ *   thick glass base, instead of a bowl that tucks in above a separate block.
+ */
+export function outlinePaths(s: GlassShape): { fill: string; stroke: string } {
+  if (s.tumbler && s.base) {
+    const [y0, r0] = s.profile[0], [y1, r1] = s.profile[1];
+    const bb = s.base.bottom, c = 3;
+    const rb = r0 + ((r1 - r0) * (bb - y0)) / (y1 - y0);      // wall extended to the base
+    const rc = r0 + ((r1 - r0) * (bb - c - y0)) / (y1 - y0);
+    const d = `M${f(CX - r0)},${f(y0)} L${f(CX - rc)},${f(bb - c)} Q${f(CX - rb)},${f(bb)} ${f(CX - rb + c)},${f(bb)}`
+      + ` L${f(CX + rb - c)},${f(bb)} Q${f(CX + rb)},${f(bb)} ${f(CX + rc)},${f(bb - c)} L${f(CX + r0)},${f(y0)}`;
+    return { fill: d + ' Z', stroke: d };
+  }
+  const bowl = bowlPath(s);
+  return { fill: bowl, stroke: bowl.replace(/ Z$/, '') };
 }
 
 /** One side of the bowl wall, for the specular highlight stroke. */

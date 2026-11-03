@@ -16,7 +16,7 @@
 import { memo, useId } from 'react';
 import type { GlassId } from '@/lib/data';
 import {
-  SHAPES, CX, bowlPath, sidePath, radiusAt, levelY, rimY, rimR, bottomY,
+  SHAPES, CX, bowlPath, outlinePaths, sidePath, radiusAt, levelY, rimY, rimR, bottomY,
 } from '@/lib/glass';
 import { parseColor, rgba } from '@/lib/mix';
 import { GarnishInside, GarnishOutside, parseGarnish } from './Garnish';
@@ -75,6 +75,7 @@ function GlassImpl({
   const s = SHAPES[glass] ?? SHAPES.oldfashioned;
   const top = rimY(s), bot = bottomY(s), rr = rimR(s);
   const bowl = bowlPath(s);
+  const outline = outlinePaths(s);
 
   const liquid = layers.reduce((a, l) => a + l.amount, 0);
   const disp = liquid > 0 ? iceDisplacement(ice, capacity) : 0;
@@ -132,6 +133,7 @@ function GlassImpl({
     <svg viewBox={viewBoxFor(top)} className={`${tone === 'dark' ? 'glass-dark' : 'glass-auto'} ${className}`} role="img" aria-label={title ?? 'Bicchiere'}>
       <defs>
         <clipPath id={`b${uid}`}><path d={bowl} /></clipPath>
+        <clipPath id={`o${uid}`}><path d={outline.fill} /></clipPath>
         <clipPath id={`l${uid}`}><rect x={0} y={surface} width={100} height={bot - surface + 2} /></clipPath>
         <linearGradient id={`liq${uid}`} gradientUnits="userSpaceOnUse" x1="0" y1={bot} x2="0" y2={top}>
           {stops.length ? stops.map((st, i) => (
@@ -231,13 +233,22 @@ function GlassImpl({
           </g>
         )}
 
-        {/* Glass body */}
-        <path d={bowl} fill={`url(#gb${uid})`} className="g-edge" strokeWidth={0.9} />
+        {/* Glass body: filled outline + open stroke (no line across the rim) */}
+        <path d={outline.fill} fill={`url(#gb${uid})`} />
+        {s.tumbler && s.base && (
+          <g>
+            {/* thick glass bottom, inside the same outer wall */}
+            <rect x={0} y={bot} width={100} height={s.base.bottom - bot + 1} className="g-solid" strokeWidth={0} clipPath={`url(#o${uid})`} />
+            <path d={`M${CX - radiusAt(s, bot) + 0.5} ${bot - 0.6} Q${CX} ${bot + 1.6} ${CX + radiusAt(s, bot) - 0.5} ${bot - 0.6}`}
+              fill="none" className="g-edge" strokeWidth={0.6} opacity={0.7} />
+          </g>
+        )}
+        <path d={outline.stroke} fill="none" className="g-edge" strokeWidth={0.9} strokeLinejoin="round" />
         <path clipPath={`url(#b${uid})`} d={sidePath(s, -1)} fill="none" className="g-hi" strokeWidth={1.5} strokeLinecap="round" opacity={0.75} />
         <path clipPath={`url(#b${uid})`} d={sidePath(s, 1, 4)} fill="none" className="g-hi" strokeWidth={0.7} strokeLinecap="round" opacity={0.5} />
         <ellipse cx={CX} cy={top} rx={rr} ry={Math.max(1.2, rr * 0.09)} fill="none" className="g-edge" strokeWidth={0.9} />
 
-        {s.base && (
+        {s.base && !s.tumbler && (
           <path
             d={`M${CX - s.base.r} ${s.base.top} L${CX + s.base.r} ${s.base.top} L${CX + s.base.r} ${s.base.bottom - 3} Q${CX + s.base.r} ${s.base.bottom} ${CX + s.base.r - 3} ${s.base.bottom} L${CX - s.base.r + 3} ${s.base.bottom} Q${CX - s.base.r} ${s.base.bottom} ${CX - s.base.r} ${s.base.bottom - 3} Z`}
             className="g-solid" strokeWidth={0.8} />
