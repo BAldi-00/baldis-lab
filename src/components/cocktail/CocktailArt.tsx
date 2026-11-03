@@ -11,47 +11,10 @@
 
 import { memo, useMemo } from 'react';
 import { Glass } from '@/components/glass/Glass';
-import type { IceKind, GlassLayer } from '@/components/glass/Glass';
-import { SHAPES } from '@/lib/glass';
 import { GLASSES } from '@/lib/data';
 import type { Cocktail } from '@/lib/data';
-import { blendColors, physics, techniqueOf, servedIce, parseColor, DILUTION } from '@/lib/mix';
-
-export function artLayers(c: Cocktail) {
-  const tech = techniqueOf(c);
-  const fizzy = c.ings.some(i => physics(i.name).fizzy);
-  let layers: GlassLayer[];
-
-  if (tech === 'build') {
-    // Pouring into the glass mixes spirits, juices and sodas; only heavy
-    // syrups (grenadine in a Sunrise) sink and stay as a layer at the bottom.
-    const heavy = c.ings.filter(i => physics(i.name).density >= 1.25);
-    const rest  = c.ings.filter(i => physics(i.name).density < 1.25);
-    layers = [
-      ...heavy.map(i => ({ color: i.color, amount: i.amount })),
-      ...(rest.length ? [{ color: blendColors(rest), amount: rest.reduce((s, i) => s + i.amount, 0) }] : []),
-    ];
-  } else {
-    const dil = tech === 'blend' ? 0.3 : DILUTION[tech];
-    const vol = c.ings.reduce((s, i) => s + i.amount, 0);
-    layers = [{
-      color: blendColors([...c.ings, { color: 'rgba(235,245,255,0.18)', amount: vol * dil }]),
-      amount: vol * (1 + dil),
-    }];
-  }
-
-  const shape = SHAPES[c.glass] ?? SHAPES.oldfashioned;
-  const g = c.garnish.toLowerCase();
-  const served = servedIce(c);
-  const shapeIce = ({ rock: 'rock', cubes: 'cubes', tall: 'stick', none: 'cubes' } as const)[shape.ice];
-  const ice: IceKind =
-    tech === 'blend' || served === 'crushed' ? 'crushed'
-    : served === 'yes' || (served !== 'no' && ['oldfashioned', 'highball', 'collins'].includes(c.glass)) ? shapeIce
-    : null;
-  const rim = g.includes('sale') ? 'salt' as const : (g.includes('zucchero') && g.includes('bordo')) ? 'sugar' as const : null;
-
-  return { layers, ice, fizzy, rim };
-}
+import { parseColor } from '@/lib/mix';
+import { artLayers } from '@/lib/art';
 
 interface Props {
   cocktail:   Cocktail;
@@ -61,7 +24,7 @@ interface Props {
 }
 
 function CocktailArtImpl({ cocktail: c, className = '', backdrop = true }: Props) {
-  const { layers, ice, fizzy, rim } = useMemo(() => artLayers(c), [c]);
+  const { layers, ice, fizzy, rim, foam } = useMemo(() => artLayers(c), [c]);
   const total = layers.reduce((s, l) => s + l.amount, 0);
   const capacity = GLASSES[c.glass]?.capacity ?? 300;
   // Show the drink as served: between 55% and 85% of the glass
@@ -84,8 +47,9 @@ function CocktailArtImpl({ cocktail: c, className = '', backdrop = true }: Props
         ice={ice}
         fizzy={fizzy}
         rim={rim}
-        garnish={c.garnish}
+        garnish={foam ? `${c.garnish} + schiuma` : c.garnish}
         title={c.name}
+        tone="dark"
         className="absolute inset-x-0 bottom-[6%] mx-auto h-[86%] w-full"
       />
     </div>

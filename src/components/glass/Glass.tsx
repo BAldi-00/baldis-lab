@@ -5,6 +5,11 @@
 // A single SVG that draws any glass with liquid layers, ice, garnish, rim,
 // straw, pour stream and bubbles. Pure render: no timers, no rAF loop — all
 // motion is CSS keyframes, so an idle glass costs nothing.
+//
+// Glass edges and reflections come from CSS tokens (globals.css → GLASS
+// TOKENS): light edges on dark backgrounds, dark edges in the day theme, so
+// an empty glass is always visible. `tone="dark"` forces the night look for
+// art that sits on its own dark backdrop.
 // ─────────────────────────────────────────────────────────────────────────────
 'use client';
 
@@ -14,6 +19,8 @@ import {
   SHAPES, CX, bowlPath, sidePath, radiusAt, levelY, rimY, rimR, bottomY,
 } from '@/lib/glass';
 import { parseColor, rgba } from '@/lib/mix';
+import { GarnishInside, GarnishOutside, parseGarnish } from './Garnish';
+import type { GarnishKind } from './Garnish';
 
 export type IceKind = 'cubes' | 'rock' | 'sphere' | 'crushed' | 'stick' | null;
 export type RimKind = 'salt' | 'sugar' | null;
@@ -31,6 +38,7 @@ export interface GlassProps {
   fizzy?:    boolean;
   pour?:     string | null;        // colour of the stream being poured
   mixing?:   'shake' | 'stir' | null;
+  tone?:     'auto' | 'dark';
   className?: string;
   title?:    string;
 }
@@ -49,14 +57,19 @@ const viewBoxFor = (rim: number) => {
 };
 
 // Deterministic pseudo-random, so cards render identically on server and client
+// (rounded: Math.sin may differ in the last bit between Node and the browser)
 const rand = (i: number) => {
-  const x = Math.sin(i * 127.1 + 311.7) * 43758.5453;
-  return x - Math.floor(x);
+  const x = (Math.round(Math.sin(i * 127.1 + 311.7) * 1e6) / 1e6) * 43758.5453;
+  return Math.round((x - Math.floor(x)) * 1e6) / 1e6;
 };
+
+const bodyStop = (offset: string, k: number) => (
+  <stop offset={offset} className="g-stop" style={{ stopOpacity: `calc(var(--g-body-a) * ${k})` }} />
+);
 
 function GlassImpl({
   glass, layers, capacity, ice = null, garnish = null, rim = null,
-  straw = false, fizzy = false, pour = null, mixing = null, className, title,
+  straw = false, fizzy = false, pour = null, mixing = null, tone = 'auto', className = '', title,
 }: GlassProps) {
   const uid = useId().replace(/:/g, '');
   const s = SHAPES[glass] ?? SHAPES.oldfashioned;
@@ -83,14 +96,10 @@ function GlassImpl({
   });
   const topColor = layers.length ? parseColor(layers[layers.length - 1].color) : null;
 
-  const g = (garnish ?? '').toLowerCase();
-  const has = (...k: string[]) => k.some(x => g.includes(x));
-  const twist = has('scorza', 'twist', 'peel');
-  // "limone" contains "lime": match lime as a whole word
-  const lime = /\blime\b/.test(g), lemon = has('limone'), orange = has('arancia');
-  const citrusColor = orange && !lime ? ['#e86a10', '#ffb35c'] : lemon && !lime ? ['#e8c21a', '#fff1a0'] : ['#5f9e1a', '#b8dc6a'];
-  const citrus = lime || lemon || orange;
-  const wheelR = Math.max(7, Math.min(11, rr * 0.32));
+  // The rim prop (simulator toggle) wins over a crust named in the garnish text
+  const kinds: GarnishKind[] = parseGarnish(garnish).filter(k => !rim || (k !== 'salt' && k !== 'sugar'));
+  if (rim) kinds.push(rim);
+  const gctx = { s, uid, surface, surfR, liquid };
 
   // Ice geometry, packed from the surface downwards
   const iceTop = liquid > 0 ? surface - 2 : bot - 18;
@@ -117,9 +126,10 @@ function GlassImpl({
 
   const footY = s.foot?.y ?? s.base?.bottom ?? bot;
   const shadowR = (s.foot?.r ?? s.base?.r ?? rr) * 1.25;
+  const iceFill = 'rgba(230,242,255,.22)';
 
   return (
-    <svg viewBox={viewBoxFor(top)} className={className} role="img" aria-label={title ?? 'Bicchiere'}>
+    <svg viewBox={viewBoxFor(top)} className={`${tone === 'dark' ? 'glass-dark' : 'glass-auto'} ${className}`} role="img" aria-label={title ?? 'Bicchiere'}>
       <defs>
         <clipPath id={`b${uid}`}><path d={bowl} /></clipPath>
         <clipPath id={`l${uid}`}><rect x={0} y={surface} width={100} height={bot - surface + 2} /></clipPath>
@@ -129,20 +139,17 @@ function GlassImpl({
           )) : <stop offset="0" stopColor="transparent" />}
         </linearGradient>
         <linearGradient id={`sh${uid}`} x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0"    stopColor="#000" stopOpacity=".42" />
+          <stop offset="0"    stopColor="#000" stopOpacity=".38" />
           <stop offset=".22"  stopColor="#000" stopOpacity=".05" />
-          <stop offset=".38"  stopColor="#fff" stopOpacity=".14" />
+          <stop offset=".38"  stopColor="#fff" stopOpacity=".16" />
           <stop offset=".62"  stopColor="#000" stopOpacity="0" />
-          <stop offset="1"    stopColor="#000" stopOpacity=".45" />
+          <stop offset="1"    stopColor="#000" stopOpacity=".4" />
         </linearGradient>
         <linearGradient id={`gb${uid}`} x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0"   stopColor="#fff" stopOpacity=".16" />
-          <stop offset=".25" stopColor="#fff" stopOpacity=".03" />
-          <stop offset=".8"  stopColor="#fff" stopOpacity=".02" />
-          <stop offset="1"   stopColor="#fff" stopOpacity=".12" />
+          {bodyStop('0', 1)}{bodyStop('.25', 0.2)}{bodyStop('.8', 0.15)}{bodyStop('1', 0.8)}
         </linearGradient>
         <radialGradient id={`sd${uid}`}>
-          <stop offset="0" stopColor="#000" stopOpacity=".55" />
+          <stop offset="0" className="g-shadow" />
           <stop offset="1" stopColor="#000" stopOpacity="0" />
         </radialGradient>
       </defs>
@@ -177,10 +184,10 @@ function GlassImpl({
 
         {/* Ice */}
         {ice && (
-          <g clipPath={`url(#b${uid})`} stroke="rgba(255,255,255,.7)" strokeWidth={0.6}>
+          <g clipPath={`url(#b${uid})`} className="g-ice" strokeWidth={0.6}>
             {cubes.map((c, i) => (
               <g key={i} transform={`rotate(${c.rot} ${c.x + c.w / 2} ${c.y + c.w / 2})`}>
-                <rect x={c.x} y={c.y} width={c.w} height={c.w} rx={c.w * 0.14} fill="rgba(230,242,255,.22)" />
+                <rect x={c.x} y={c.y} width={c.w} height={c.w} rx={c.w * 0.14} fill={iceFill} />
                 <path d={`M${c.x + c.w * 0.18} ${c.y + c.w * 0.25} L${c.x + c.w * 0.5} ${c.y + c.w * 0.18}`} stroke="rgba(255,255,255,.9)" strokeWidth={0.9} strokeLinecap="round" />
               </g>
             ))}
@@ -189,13 +196,13 @@ function GlassImpl({
               const cy = Math.min(iceTop + R * 0.75, bot - R - 1);
               return (
                 <g>
-                  <circle cx={CX} cy={cy} r={R} fill="rgba(230,242,255,.2)" />
+                  <circle cx={CX} cy={cy} r={R} fill={iceFill} />
                   <ellipse cx={CX - R * 0.35} cy={cy - R * 0.4} rx={R * 0.3} ry={R * 0.16} fill="rgba(255,255,255,.55)" stroke="none" transform={`rotate(-30 ${CX - R * 0.35} ${cy - R * 0.4})`} />
                 </g>
               );
             })()}
             {ice === 'stick' && (
-              <rect x={CX - r0 * 0.45} y={iceTop} width={r0 * 0.9} height={Math.max(8, bot - iceTop - 3)} rx={3} fill="rgba(230,242,255,.22)" />
+              <rect x={CX - r0 * 0.45} y={iceTop} width={r0 * 0.9} height={Math.max(8, bot - iceTop - 3)} rx={3} fill={iceFill} />
             )}
             {ice === 'crushed' && Array.from({ length: 26 }, (_, i) => {
               const yy = iceTop + rand(i) * Math.max(6, bot - iceTop - 4);
@@ -209,115 +216,42 @@ function GlassImpl({
 
         {/* Surface meniscus */}
         {liquid > 0 && topColor && (
-          <ellipse cx={CX} cy={surface} rx={surfR} ry={Math.max(0.8, surfR * 0.09)}
+          <ellipse cx={CX} cy={surface} rx={surfR} ry={Math.max(0.8, surfR * 0.09)} className="g-edge" strokeWidth={0.35}
             fill={rgba({ r: Math.min(255, topColor.r + 40), g: Math.min(255, topColor.g + 40), b: Math.min(255, topColor.b + 40), a: Math.min(1, topColor.a + 0.1) })} />
         )}
+
+        {/* Floating garnishes (crema + coffee beans, muddled mint) */}
+        <g clipPath={`url(#b${uid})`}><GarnishInside kinds={kinds} ctx={gctx} /></g>
 
         {/* Bar spoon while stirring */}
         {mixing === 'stir' && (
           <g className="anim-stir">
-            <line x1={CX + 4} y1={top - 30} x2={CX} y2={bot - 4} stroke="#d9d4cc" strokeWidth={1.6} strokeLinecap="round" />
-            <circle cx={CX + 4} cy={top - 30} r={2} fill="#d9d4cc" />
+            <line x1={CX + 4} y1={top - 30} x2={CX} y2={bot - 4} stroke="#b9b3aa" strokeWidth={1.6} strokeLinecap="round" />
+            <circle cx={CX + 4} cy={top - 30} r={2} fill="#b9b3aa" />
           </g>
         )}
 
         {/* Glass body */}
-        <path d={bowl} fill={`url(#gb${uid})`} stroke="rgba(255,255,255,.5)" strokeWidth={0.9} />
-        <path clipPath={`url(#b${uid})`} d={sidePath(s, -1)} fill="none" stroke="rgba(255,255,255,.55)" strokeWidth={1.5} strokeLinecap="round" opacity={0.7} />
-        <path clipPath={`url(#b${uid})`} d={sidePath(s, 1, 4)} fill="none" stroke="rgba(255,255,255,.3)" strokeWidth={0.7} strokeLinecap="round" />
-        <ellipse cx={CX} cy={top} rx={rr} ry={Math.max(1.2, rr * 0.09)} fill="none" stroke="rgba(255,255,255,.6)" strokeWidth={0.9} />
+        <path d={bowl} fill={`url(#gb${uid})`} className="g-edge" strokeWidth={0.9} />
+        <path clipPath={`url(#b${uid})`} d={sidePath(s, -1)} fill="none" className="g-hi" strokeWidth={1.5} strokeLinecap="round" opacity={0.75} />
+        <path clipPath={`url(#b${uid})`} d={sidePath(s, 1, 4)} fill="none" className="g-hi" strokeWidth={0.7} strokeLinecap="round" opacity={0.5} />
+        <ellipse cx={CX} cy={top} rx={rr} ry={Math.max(1.2, rr * 0.09)} fill="none" className="g-edge" strokeWidth={0.9} />
 
         {s.base && (
           <path
             d={`M${CX - s.base.r} ${s.base.top} L${CX + s.base.r} ${s.base.top} L${CX + s.base.r} ${s.base.bottom - 3} Q${CX + s.base.r} ${s.base.bottom} ${CX + s.base.r - 3} ${s.base.bottom} L${CX - s.base.r + 3} ${s.base.bottom} Q${CX - s.base.r} ${s.base.bottom} ${CX - s.base.r} ${s.base.bottom - 3} Z`}
-            fill="rgba(255,255,255,.09)" stroke="rgba(255,255,255,.4)" strokeWidth={0.8} />
+            className="g-solid" strokeWidth={0.8} />
         )}
         {s.stem && (
           <rect x={CX - s.stem.w / 2} y={s.stem.top} width={s.stem.w} height={s.stem.bottom - s.stem.top} rx={s.stem.w / 2}
-            fill="rgba(255,255,255,.22)" stroke="rgba(255,255,255,.4)" strokeWidth={0.5} />
+            className="g-solid" strokeWidth={0.5} />
         )}
         {s.foot && (
-          <ellipse cx={CX} cy={s.foot.y} rx={s.foot.r} ry={s.foot.r * 0.13} fill="rgba(255,255,255,.1)" stroke="rgba(255,255,255,.45)" strokeWidth={0.8} />
+          <ellipse cx={CX} cy={s.foot.y} rx={s.foot.r} ry={s.foot.r * 0.13} className="g-solid" strokeWidth={0.8} />
         )}
 
-        {/* Rim garnish: salt / sugar crust */}
-        {rim && (
-          <ellipse cx={CX} cy={top + 0.6} rx={rr + 0.4} ry={Math.max(1.4, rr * 0.1)} fill="none"
-            stroke={rim === 'salt' ? '#f4f6f8' : '#f3e2bd'} strokeWidth={2.8} strokeDasharray="0.8 0.9" strokeLinecap="round" />
-        )}
-
-        {/* Garnishes */}
-        {has('ombrellino') && (
-          <g>
-            <line x1={CX + rr * 0.45} y1={top + 8} x2={CX + rr * 0.45 + 9} y2={top - 22} stroke="#8a5a2b" strokeWidth={1} />
-            <path d={`M${CX + rr * 0.45 - 6} ${top - 18} Q${CX + rr * 0.45 + 9} ${top - 34} ${CX + rr * 0.45 + 24} ${top - 18} Z`} fill="#e94f6a" />
-            <path d={`M${CX + rr * 0.45 + 9} ${top - 26} L${CX + rr * 0.45 + 2} ${top - 18} L${CX + rr * 0.45 + 16} ${top - 18} Z`} fill="#ffd166" />
-          </g>
-        )}
-        {has('menta', 'basilico') && (
-          <g fill={has('basilico') ? '#3f8f3a' : '#2f9e55'}>
-            {[[-6, -2, -35], [-1, -10, 5], [4, -4, 40], [-9, -12, -60], [2, -17, 15]].map(([dx, dy, rot], i) => (
-              <ellipse key={i} cx={CX - rr * 0.35 + dx} cy={top + dy} rx={3} ry={6} transform={`rotate(${rot} ${CX - rr * 0.35 + dx} ${top + dy})`} opacity={0.95 - i * 0.05} />
-            ))}
-            <line x1={CX - rr * 0.35} y1={top + 6} x2={CX - rr * 0.35 - 1} y2={top - 14} stroke="#1f6b39" strokeWidth={0.8} />
-          </g>
-        )}
-        {has('ananas') && (
-          <g>
-            <path d={`M${CX + rr - 4} ${top + 2} L${CX + rr + 14} ${top - 4} L${CX + rr + 6} ${top + 14} Z`} fill="#f6c945" stroke="#d99a1e" strokeWidth={0.6} />
-            <path d={`M${CX + rr + 12} ${top - 4} l4 -10 M${CX + rr + 13} ${top - 4} l8 -7 M${CX + rr + 11} ${top - 3} l-1 -11`} stroke="#3f8f3a" strokeWidth={1.6} strokeLinecap="round" />
-          </g>
-        )}
-        {citrus && !twist && (
-          <g transform={`translate(${CX + rr - wheelR * 0.4} ${top - wheelR * 0.15})`}>
-            <circle r={wheelR} fill={citrusColor[0]} />
-            <circle r={wheelR * 0.86} fill="#fdf6dc" />
-            <circle r={wheelR * 0.78} fill={citrusColor[1]} />
-            {Array.from({ length: 8 }, (_, i) => (
-              <line key={i} x1={0} y1={0} x2={Math.cos(i * Math.PI / 4) * wheelR * 0.78} y2={Math.sin(i * Math.PI / 4) * wheelR * 0.78} stroke="#fdf6dc" strokeWidth={0.7} />
-            ))}
-            <circle r={wheelR * 0.12} fill="#fdf6dc" />
-          </g>
-        )}
-        {citrus && twist && (() => {
-          // Peel draped over the front of the rim, hanging down the outside wall
-          const ry = Math.max(1.2, rr * 0.09);
-          const d = `M${CX + rr * 0.15} ${top + ry} Q${CX + rr * 0.75} ${top + ry * 0.9} ${CX + rr + 0.5} ${top} C${CX + rr + 3} ${top + 6}, ${CX + rr + 0.5} ${top + 12}, ${CX + rr + 2.5} ${top + 19}`;
-          return (
-            <g fill="none" strokeLinecap="round">
-              <path d={d} stroke={citrusColor[0]} strokeWidth={3.4} />
-              <path d={d} stroke={citrusColor[1]} strokeWidth={1.1} opacity={0.8} />
-            </g>
-          );
-        })()}
-        {has('ciliegia', 'cherry') && (
-          <g>
-            <path d={`M${CX - 2} ${top - 6} Q${CX + 4} ${top - 18} ${CX + 10} ${top - 22}`} stroke="#3c5a1e" strokeWidth={0.9} fill="none" />
-            <circle cx={CX - 2} cy={top - 3} r={4.6} fill="#8e0c1e" />
-            <ellipse cx={CX - 3.5} cy={top - 4.8} rx={1.4} ry={0.9} fill="rgba(255,255,255,.45)" />
-          </g>
-        )}
-        {has('oliva') && (
-          <g>
-            <line x1={CX + rr + 6} y1={top - 16} x2={CX - 6} y2={Math.min(bot - 6, top + 24)} stroke="#c9b48a" strokeWidth={0.9} />
-            <ellipse cx={CX - 1} cy={Math.min(bot - 10, top + 17)} rx={4} ry={3} fill="#6d7d2a" transform={`rotate(-35 ${CX - 1} ${Math.min(bot - 10, top + 17)})`} />
-            <circle cx={CX - 2.4} cy={Math.min(bot - 10, top + 17) - 0.4} r={1} fill="#b8322a" />
-          </g>
-        )}
-        {has('caffè', 'chicchi') && liquid > 0 && [-5, 0, 5].map((dx, i) => (
-          <ellipse key={i} cx={CX + dx} cy={surface - 0.4 + (i === 1 ? -0.6 : 0)} rx={2} ry={1.2} fill="#3b2010" stroke="#1d0f07" strokeWidth={0.3} />
-        ))}
-        {has('fragol') && (
-          <path d={`M${CX + rr - 6} ${top - 2} q4 12 9 0 q-4 -5 -9 0 Z`} fill="#d7263d" />
-        )}
-        {has('cetriolo') && (
-          <g transform={`translate(${CX + rr - 3} ${top})`}>
-            <circle r={7} fill="#2e6b2a" /><circle r={6} fill="#cfe8b0" />
-          </g>
-        )}
-        {has('cannella') && (
-          <rect x={CX + rr * 0.3} y={top - 22} width={3} height={30} rx={1.2} fill="#8b4a1e" transform={`rotate(14 ${CX + rr * 0.3} ${top})`} />
-        )}
+        {/* Rim garnishes: wheels, twists, sprigs, picks, crusts */}
+        <GarnishOutside kinds={kinds} ctx={gctx} />
 
         {/* Pour stream */}
         {pour && (

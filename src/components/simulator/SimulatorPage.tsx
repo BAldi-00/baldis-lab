@@ -18,13 +18,13 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { Glass, iceDisplacement } from '@/components/glass/Glass';
 import type { IceKind, RimKind, GlassLayer } from '@/components/glass/Glass';
-import { artLayers } from '@/components/cocktail/CocktailArt';
+import { artLayers } from '@/lib/art';
 import { Icon } from '@/components/ui/Icon';
 import { SHAPES } from '@/lib/glass';
 import { GLASSES, INGREDIENTS, INGREDIENT_CATEGORIES, COCKTAILS, getCocktailBySlug, cocktailHref } from '@/lib/data';
 import type { GlassId, Ingredient, Cocktail } from '@/lib/data';
 import {
-  blendColors, canon, drinkStats, matchRecipes, physics, techniqueOf, DILUTION,
+  blendColors, canon, family, drinkStats, matchRecipes, physics, techniqueOf, DILUTION,
 } from '@/lib/mix';
 import type { MixMethod } from '@/lib/mix';
 
@@ -45,14 +45,14 @@ const ICE_OPTIONS: { id: IceKind; label: string }[] = [
 const GARNISHES = [
   'Nessuna', 'Fetta di lime', 'Scorza di lime', 'Fetta di limone', 'Scorza di limone',
   "Fetta d'arancia", "Scorza d'arancia", 'Ciliegia', 'Menta', 'Oliva', 'Ananas',
-  'Ombrellino', 'Chicchi di caffè', 'Cetriolo',
+  'Ombrellino', 'Chicchi di caffè', 'Cetriolo', 'Fragola', 'Basilico', 'Cannella',
 ];
 
 /** Pick the simulator garnish closest to a recipe's garnish text. */
 function garnishFor(text: string): string {
   const g = text.toLowerCase();
   const peel = g.includes('scorza');
-  for (const k of ['ombrellino', 'oliva', 'ciliegia', 'menta', 'ananas', 'cetriolo'] as const) {
+  for (const k of ['ombrellino', 'oliva', 'ciliegia', 'menta', 'ananas', 'cetriolo', 'fragola', 'basilico', 'cannella'] as const) {
     if (g.includes(k)) return GARNISHES.find(x => x.toLowerCase().includes(k))!;
   }
   if (g.includes('caffè')) return 'Chicchi di caffè';
@@ -302,7 +302,7 @@ export default function SimulatorPage() {
 
   const targetRows = target?.ings.map(i => {
     const name = canon(i.name);
-    const poured = parts.filter(p => canon(p.name) === name).reduce((s, p) => s + p.amount, 0);
+    const poured = parts.filter(p => family(p.name) === family(name)).reduce((s, p) => s + p.amount, 0);
     const ok = Math.abs(poured - i.amount) <= Math.max(2, i.amount * 0.15);
     return { name, poured, want: i.amount, color: i.color, ok, over: poured > i.amount * 1.15 + 2 };
   }) ?? [];
@@ -328,7 +328,7 @@ export default function SimulatorPage() {
           <div className="card relative overflow-hidden">
             <div className="pointer-events-none absolute inset-0"
               style={{ background: `radial-gradient(60% 50% at 50% 62%, ${layers.length ? blendColors(layers) : 'rgba(255,255,255,.04)'}, transparent 70%)`, opacity: 0.35 }} />
-            <div className="absolute inset-x-0 bottom-0 h-[22%] bg-gradient-to-b from-black/0 to-black/30" />
+            <div className="absolute inset-x-0 bottom-0 h-[22%] bg-gradient-to-b from-transparent to-line/[0.06]" />
 
             <div className="relative flex items-start justify-between p-4 sm:p-5">
               <div>
@@ -407,11 +407,11 @@ export default function SimulatorPage() {
           <div className="card flex flex-col p-4 lg:sticky lg:top-24 lg:max-h-[calc(100vh-7rem)]">
             <h2 className="font-display text-2xl">Bottigliera</h2>
             <p className="mt-1 text-xs text-muted">Tocca per la dose standard · tieni premuto per versare</p>
-            <label className="relative mt-3">
+            <label className="relative mt-3 shrink-0">
               <Icon name="search" size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
               <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Cerca…" className="input rounded-full py-2 pl-9 text-sm" />
             </label>
-            <div className="no-scrollbar -mx-1 mt-3 flex gap-1.5 overflow-x-auto px-1 pb-1">
+            <div className="no-scrollbar -mx-1 mt-3 flex shrink-0 gap-1.5 overflow-x-auto px-1 pb-1">
               {INGREDIENT_CATEGORIES.map(c => (
                 <button key={c} onClick={() => setCat(c)} data-active={cat === c} className="chip px-3 py-1 text-xs">{c}</button>
               ))}
@@ -428,7 +428,7 @@ export default function SimulatorPage() {
                     disabled={autoPouring}
                     className="flex w-full touch-none select-none items-center gap-3 rounded-xl px-2 py-2 text-left transition-colors hover:bg-line/5 active:bg-accent/10"
                   >
-                    <span className="h-7 w-3 shrink-0 rounded-full ring-1 ring-white/15" style={{ background: ing.color }} />
+                    <span className="h-7 w-3 shrink-0 rounded-full ring-1 ring-line/25" style={{ background: ing.color }} />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm">{ing.name}</span>
                       <span className="block text-[11px] text-muted">{ing.abv > 0 ? `${ing.abv}% vol` : 'analcolico'}</span>
@@ -499,7 +499,7 @@ export default function SimulatorPage() {
               <ul className="mt-3 grid gap-1.5">
                 {parts.map((p, i) => (
                   <li key={`${p.name}-${p.mixed}`} className="flex items-center gap-2.5 rounded-xl bg-bg/40 py-1.5 pl-3 pr-1.5">
-                    <span className="h-3 w-3 shrink-0 rounded-full ring-1 ring-white/20" style={{ background: p.color }} />
+                    <span className="h-3 w-3 shrink-0 rounded-full ring-1 ring-line/25" style={{ background: p.color }} />
                     <span className="min-w-0 flex-1 truncate text-sm">{p.name}{p.mixed && <span className="ml-1.5 text-[10px] uppercase tracking-wider text-muted">mix</span>}</span>
                     <button onClick={() => adjustPart(i, -5)} className="btn-icon h-7 w-7" aria-label="Meno 5 ml"><Icon name="minus" size={13} /></button>
                     <span className="w-12 text-center text-sm tabular-nums">{Math.round(p.amount)} ml</span>
@@ -509,7 +509,7 @@ export default function SimulatorPage() {
                 ))}
                 {water > 0 && (
                   <li className="flex items-center gap-2.5 px-3 py-1 text-sm text-muted">
-                    <span className="h-3 w-3 rounded-full ring-1 ring-white/20" style={{ background: WATER }} />
+                    <span className="h-3 w-3 rounded-full ring-1 ring-line/25" style={{ background: WATER }} />
                     <span className="flex-1">Acqua di diluizione</span>
                     <span className="tabular-nums">{Math.round(water)} ml</span>
                   </li>

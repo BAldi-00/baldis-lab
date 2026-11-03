@@ -42,65 +42,34 @@
   color-scheme: light;
 }
 
-[data-theme='summer'] {
-  --bg:        11 26 31;
-  --bg-2:      14 36 42;
-  --surface:   18 42 48;
-  --surface-2: 24 54 60;
-  --line:      220 255 250;
-  --text:      240 250 246;
-  --muted:     150 184 180;
-  --accent:    255 122 89;
-  --accent-2:  255 196 92;
-  --on-accent: 30 12 6;
-  --glow:      255 122 89;
-  color-scheme: dark;
+/* ── GLASS TOKENS ────────────────────────────────────────────────────────────
+   The glass is drawn with these, so it reads on dark and light backgrounds.
+   .glass-dark forces the night look (cocktail art always sits on a dark bar). */
+
+.glass-auto, .glass-dark {
+  --g-edge: 255 255 255;  --g-edge-a: .5;
+  --g-hi:   255 255 255;  --g-hi-a:   .55;
+  --g-body: 255 255 255;  --g-body-a: .16;
+  --g-solid-a: .09;
+  --g-ice:  255 255 255;  --g-ice-a:  .7;
+  --g-shadow-a: .55;
 }
 
-[data-theme='winter'] {
-  --bg:        11 16 32;
-  --bg-2:      16 23 44;
-  --surface:   20 28 52;
-  --surface-2: 28 38 66;
-  --line:      220 236 255;
-  --text:      236 244 252;
-  --muted:     150 166 192;
-  --accent:    159 212 245;
-  --accent-2:  196 180 255;
-  --on-accent: 8 16 32;
-  --glow:      159 212 245;
-  color-scheme: dark;
+[data-theme='day'] .glass-auto {
+  --g-edge: 58 44 34;     --g-edge-a: .62;
+  --g-hi:   255 255 255;  --g-hi-a:   .95;
+  --g-body: 120 98 80;    --g-body-a: .13;
+  --g-solid-a: .14;
+  --g-ice:  70 110 150;   --g-ice-a:  .55;
+  --g-shadow-a: .22;
 }
 
-[data-theme='halloween'] {
-  --bg:        18 10 20;
-  --bg-2:      28 14 30;
-  --surface:   34 18 36;
-  --surface-2: 46 24 46;
-  --line:      255 220 200;
-  --text:      250 236 224;
-  --muted:     176 150 160;
-  --accent:    255 122 26;
-  --accent-2:  176 90 255;
-  --on-accent: 24 8 0;
-  --glow:      255 122 26;
-  color-scheme: dark;
-}
-
-[data-theme='christmas'] {
-  --bg:        10 21 16;
-  --bg-2:      14 30 22;
-  --surface:   18 36 27;
-  --surface-2: 24 48 36;
-  --line:      240 255 240;
-  --text:      246 242 228;
-  --muted:     160 178 164;
-  --accent:    232 195 90;
-  --accent-2:  214 64 64;
-  --on-accent: 24 16 4;
-  --glow:      214 64 64;
-  color-scheme: dark;
-}
+.g-edge   { stroke: rgb(var(--g-edge) / var(--g-edge-a)); }
+.g-hi     { stroke: rgb(var(--g-hi) / var(--g-hi-a)); }
+.g-solid  { fill: rgb(var(--g-body) / var(--g-solid-a)); stroke: rgb(var(--g-edge) / calc(var(--g-edge-a) * .8)); }
+.g-ice    { stroke: rgb(var(--g-ice) / var(--g-ice-a)); }
+.g-stop   { stop-color: rgb(var(--g-body)); }
+.g-shadow { stop-color: #000; stop-opacity: var(--g-shadow-a); }
 
 /* ── BASE ──────────────────────────────────────────────────────────────────── */
 

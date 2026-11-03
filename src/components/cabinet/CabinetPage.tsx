@@ -68,7 +68,7 @@ export function CabinetPage() {
                   <div className="flex flex-wrap gap-1.5">
                     {list.map(i => (
                       <button key={i.id} onClick={() => toggleOwned(i.id)} data-active={cabinet.has(i.id)} className="chip">
-                        <span className="h-2.5 w-2.5 rounded-full ring-1 ring-white/20" style={{ background: i.color }} />
+                        <span className="h-2.5 w-2.5 rounded-full ring-1 ring-line/25" style={{ background: i.color }} />
                         {i.name}
                       </button>
                     ))}
@@ -101,7 +101,7 @@ export function CabinetPage() {
                   const ing = findIngredient(name);
                   return (
                     <li key={name} className="flex items-center gap-3">
-                      <span className="h-3 w-3 rounded-full ring-1 ring-white/20" style={{ background: ing?.color ?? '#999' }} />
+                      <span className="h-3 w-3 rounded-full ring-1 ring-line/25" style={{ background: ing?.color ?? '#999' }} />
                       <span className="flex-1">{name}</span>
                       <span className="text-sm text-muted">+{n} {n === 1 ? 'ricetta' : 'ricette'}</span>
                       {ing && <button onClick={() => toggleOwned(ing.id)} className="btn-icon h-7 w-7" aria-label={`Aggiungi ${name}`}><Icon name="plus" size={13} /></button>}

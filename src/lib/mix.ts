@@ -35,6 +35,16 @@ export function canon(name: string): string {
   return name.trim();
 }
 
+// Bottles that are interchangeable in a recipe (any gin makes a Gin Tonic)
+const FAMILY: Record<string, string> = {
+  'Gin Premium':  'Gin London Dry',
+  'Vodka Citrus': 'Vodka',
+  'Cointreau':    'Triple Sec',
+};
+
+/** Canonical name, folded to its interchangeable family. */
+export const family = (name: string): string => { const c = canon(name); return FAMILY[c] ?? c; };
+
 export function findIngredient(name: string): Ingredient | undefined {
   return BY_NAME.get(canon(name).toLowerCase());
 }
@@ -174,7 +184,7 @@ function shares(parts: Part[]): Map<string, number> {
   const total = parts.reduce((s, p) => s + p.amount, 0) || 1;
   const m = new Map<string, number>();
   for (const p of parts) {
-    const k = canon(p.name);
+    const k = family(p.name);
     m.set(k, (m.get(k) ?? 0) + p.amount / total);
   }
   return m;
@@ -219,20 +229,20 @@ export function matchRecipes(parts: Part[], limit = 3): RecipeMatch[] {
 
 /** Recipe ingredients that are not in the given pantry (by ingredient id). */
 export function missingFromPantry(c: Cocktail, owned: Set<number>): string[] {
-  return c.ings
-    .filter(i => {
-      const ing = findIngredient(i.name);
-      return !ing || !owned.has(ing.id);
-    })
-    .map(i => canon(i.name));
+  const have = new Set(INGREDIENTS.filter(i => owned.has(i.id)).map(i => family(i.name)));
+  return c.ings.filter(i => !have.has(family(i.name))).map(i => canon(i.name));
 }
 
 /** Ice in the serving glass, read from the method ("su ghiaccio" vs "doppio colino"). */
-export function servedIce(c: Cocktail): 'crushed' | 'yes' | 'no' {
+export function servedIce(c: Cocktail): 'crushed' | 'yes' | 'no' | 'unknown' {
   const m = c.method.toLowerCase();
   if (/tritato|crushed/.test(m)) return 'crushed';
+  if (/(colino|filtra)[^.]*su ghiaccio|ghiaccio fresco/.test(m)) return 'yes';
   if (/colino|filtra|strain/.test(m)) return 'no';
-  return /ghiaccio/.test(m) ? 'yes' : 'no';
+  if (!m.includes('ghiaccio')) return 'unknown';
+  // Ice in the serving glass ("su ghiaccio", "riempi il bicchiere con ghiaccio",
+  // "aggiungi bourbon e ghiaccio"), not in the shaker ("shaker con ghiaccio").
+  return /(su|sul|nel) ghiaccio|ghiaccio nel (bicchiere|calice|mug|tumbler)|metti (il )?ghiaccio|riempi[^.]*ghiaccio|aggiungi[^.]*ghiaccio/.test(m) ? 'yes' : 'no';
 }
 
 /** Methods a recipe implies, read from its tags and method text. */

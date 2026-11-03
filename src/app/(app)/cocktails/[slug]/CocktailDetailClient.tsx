@@ -114,7 +114,7 @@ export default function CocktailDetailClient({ cocktail: c }: { cocktail: Cockta
                 const have = p && cabinet.has(p.id);
                 return (
                   <li key={i} className="flex items-center gap-3 py-3">
-                    <span className="h-3.5 w-3.5 shrink-0 rounded-full ring-1 ring-white/20" style={{ background: ing.color }} />
+                    <span className="h-3.5 w-3.5 shrink-0 rounded-full ring-1 ring-line/25" style={{ background: ing.color }} />
                     <span className="flex-1 text-[15px]">{canon(ing.name)}</span>
                     {have && <span className="text-[11px] font-medium uppercase tracking-wider text-accent/80">nel tuo bar</span>}
                     <span className="w-20 text-right font-display text-lg tabular-nums">{fmt(ing.amount)}</span>

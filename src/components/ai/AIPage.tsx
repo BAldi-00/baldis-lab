@@ -31,6 +31,7 @@ export default function AIPage() {
   const [input,    setInput]    = useState('');
   const [loading,  setLoading]  = useState(false);
   const [error,    setError]    = useState<string | null>(null);
+  const [mode,     setMode]     = useState<'claude' | 'ricettario' | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -50,9 +51,26 @@ export default function AIPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: history }),
       });
-      const data = await res.json().catch(() => ({})) as { content?: string; error?: string };
-      if (!res.ok) { setError(data.error ?? 'Qualcosa è andato storto. Riprova.'); return; }
-      setMessages(m => [...m, { role: 'assistant', content: data.content ?? '…' }]);
+      if (!res.ok || !res.body) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        setError(data.error ?? 'Qualcosa è andato storto. Riprova.');
+        return;
+      }
+      setMode(res.headers.get('X-Bartender') === 'claude' ? 'claude' : 'ricettario');
+      // Stream the answer into the last bubble as it arrives
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let reply = '';
+      setMessages(m => [...m, { role: 'assistant', content: '' }]);
+      setLoading(false);
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        reply += decoder.decode(value, { stream: true });
+        const text = reply;
+        setMessages(m => [...m.slice(0, -1), { role: 'assistant', content: text }]);
+      }
+      if (!reply.trim()) setMessages(m => [...m.slice(0, -1), { role: 'assistant', content: 'Non ho una risposta, prova a riformulare.' }]);
     } catch {
       setError('Connessione assente. Riprova tra un momento.');
     } finally {
@@ -71,6 +89,12 @@ export default function AIPage() {
       <header>
         <div className="eyebrow">AI Bartender</div>
         <h1 className="mt-2 font-display text-5xl">Chiedi al bancone</h1>
+        {mode && (
+          <p className="mt-3 inline-flex items-center gap-2 text-xs text-muted">
+            <span className={`h-2 w-2 rounded-full ${mode === 'claude' ? 'bg-emerald-500' : 'bg-accent'}`} />
+            {mode === 'claude' ? 'Risponde Claude' : 'Risponde il ricettario del Lab'}
+          </p>
+        )}
       </header>
 
       <div className="mt-8 flex-1 space-y-4" aria-live="polite">

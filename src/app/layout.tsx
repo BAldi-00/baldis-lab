@@ -47,7 +47,7 @@ export const viewport: Viewport = {
   initialScale: 1,
 };
 
-const THEME_BOOT = `try{var t=JSON.parse(localStorage.getItem('bl_theme')||'"night"');if(['night','day','summer','winter','halloween','christmas'].indexOf(t)>-1)document.documentElement.dataset.theme=t}catch(e){}`;
+const THEME_BOOT = `try{var t=JSON.parse(localStorage.getItem('bl_theme')||'"night"');if(t==='day')document.documentElement.dataset.theme='day'}catch(e){}`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

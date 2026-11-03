@@ -1,13 +1,12 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // BALDI'S LAB — Layout Components
-// src/components/layout/NavBar.tsx  (NavBar · ThemePicker · Footer · AgeGate · AuthModal)
+// src/components/layout/NavBar.tsx  (NavBar · ThemeToggle · Footer · AgeGate · AuthModal)
 // ─────────────────────────────────────────────────────────────────────────────
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
 import Link             from 'next/link';
 import { usePathname }  from 'next/navigation';
-import { THEMES }       from '@/lib/themes';
 import { isOver18 }     from '@/lib/utils';
 import { useApp }       from '@/context/AppContext';
 import { Icon }         from '@/components/ui/Icon';
@@ -29,40 +28,16 @@ export function Logo({ className = '' }: { className?: string }) {
   );
 }
 
-// ── THEME PICKER ──────────────────────────────────────────────────────────────
+// ── THEME TOGGLE ──────────────────────────────────────────────────────────────
 
-function ThemePicker() {
+function ThemeToggle() {
   const { theme, setTheme } = useApp();
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const close = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [open]);
-
+  const next = theme === 'night' ? 'day' : 'night';
   return (
-    <div ref={ref} className="relative">
-      <button className="btn-icon" onClick={() => setOpen(o => !o)} aria-label="Cambia tema" aria-expanded={open}>
-        <Icon name="palette" />
-      </button>
-      {open && (
-        <div className="absolute right-0 top-11 z-50 w-48 rounded-2xl border border-line/10 bg-surface p-1.5 shadow-2xl shadow-black/40 animate-fade-up">
-          {THEMES.map(th => (
-            <button key={th.id} onClick={() => { setTheme(th.id); setOpen(false); }}
-              className={`flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm transition-colors hover:bg-line/5 ${theme === th.id ? 'text-accent' : 'text-text'}`}>
-              <span className="relative h-5 w-5 rounded-full border border-line/20" style={{ background: th.swatch[0] }}>
-                <span className="absolute inset-[5px] rounded-full" style={{ background: th.swatch[1] }} />
-              </span>
-              {th.label}
-              {theme === th.id && <Icon name="check" size={15} className="ml-auto" />}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+    <button className="btn-icon" onClick={() => setTheme(next)}
+      aria-label={next === 'day' ? 'Passa al tema giorno' : 'Passa al tema notte'} title={next === 'day' ? 'Tema giorno' : 'Tema notte'}>
+      <Icon name={theme === 'night' ? 'sun' : 'moon'} />
+    </button>
   );
 }
 
@@ -91,7 +66,7 @@ export function NavBar() {
         </div>
 
         <div className="ml-auto flex items-center gap-2 lg:ml-0">
-          <ThemePicker />
+          <ThemeToggle />
           {user ? (
             <Link href="/profile" aria-label="Profilo"
               className={`flex h-9 w-9 items-center justify-center rounded-full bg-accent text-sm font-bold uppercase text-on-accent ${isActive('/profile') ? 'ring-2 ring-accent/50 ring-offset-2 ring-offset-bg' : ''}`}>
