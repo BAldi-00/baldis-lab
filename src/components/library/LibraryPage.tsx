@@ -4,221 +4,169 @@
 // ─────────────────────────────────────────────────────────────────────────────
 'use client';
 
-import { useState, useMemo } from 'react';
-import { CocktailCard }      from '@/components/cocktail/CocktailCard';
-import { useApp }            from '@/context/AppContext';
+import { useMemo, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { CocktailCard } from '@/components/cocktail/CocktailCard';
+import { Icon }         from '@/components/ui/Icon';
+import { useApp }       from '@/context/AppContext';
 import { COCKTAILS, GLASSES, COCKTAIL_CATEGORIES, FLAVOR_TAGS } from '@/lib/data';
-import { useDebounce }       from '@/lib/utils';
-import type { GlassId, FlavorTag, CocktailCategory } from '@/lib/data';
+import type { GlassId, FlavorTag, CocktailCategory, Cocktail } from '@/lib/data';
+import { useDebounce } from '@/lib/utils';
+import { missingFromPantry } from '@/lib/mix';
 
-// ── FILTER TYPES ──────────────────────────────────────────────────────────────
+type AbvBucket = 'zero' | 'light' | 'mid' | 'strong' | null;
+type SortKey = 'name' | 'abv-asc' | 'abv-desc' | 'year' | 'diff';
 
-type AbvBucket = 'analcolico' | 'light' | 'mid' | 'strong' | 'vstrong' | null;
-
-const ABV_FILTERS: { id: AbvBucket; label: string }[] = [
-  { id: null,        label: 'Tutti'         },
-  { id: 'analcolico',label: '0% Analcolico' },
-  { id: 'light',     label: '1–13%'         },
-  { id: 'mid',       label: '14–22%'        },
-  { id: 'strong',    label: '23–30%'        },
-  { id: 'vstrong',   label: '31%+'          },
+const ABV_FILTERS: { id: AbvBucket; label: string; test: (n: number) => boolean }[] = [
+  { id: 'zero',   label: 'Analcolici', test: n => n === 0 },
+  { id: 'light',  label: 'Leggeri ≤13%', test: n => n > 0 && n <= 13 },
+  { id: 'mid',    label: 'Medi 14–22%', test: n => n >= 14 && n <= 22 },
+  { id: 'strong', label: 'Forti 23%+', test: n => n >= 23 },
 ];
 
-function matchAbv(abv: number, bucket: AbvBucket): boolean {
-  if (!bucket)                return true;
-  if (bucket === 'analcolico') return abv === 0;
-  if (bucket === 'light')      return abv > 0  && abv <= 13;
-  if (bucket === 'mid')        return abv >= 14 && abv <= 22;
-  if (bucket === 'strong')     return abv >= 23 && abv <= 30;
-  if (bucket === 'vstrong')    return abv > 30;
-  return true;
-}
+const SORTS: { id: SortKey; label: string; fn: (a: Cocktail, b: Cocktail) => number }[] = [
+  { id: 'name',     label: 'A–Z',            fn: (a, b) => a.name.localeCompare(b.name, 'it') },
+  { id: 'abv-asc',  label: 'Più leggeri',    fn: (a, b) => a.abv - b.abv },
+  { id: 'abv-desc', label: 'Più forti',      fn: (a, b) => b.abv - a.abv },
+  { id: 'year',     label: 'Più storici',    fn: (a, b) => a.year - b.year },
+  { id: 'diff',     label: 'Più facili',     fn: (a, b) => a.diff - b.diff },
+];
 
-// ── COMPONENT ─────────────────────────────────────────────────────────────────
-// No props — reads t/favorites/openModal from AppContext. Rendered from
-// src/app/(app)/cocktails/page.tsx
-// (Internal filter state — search, category, abv, flavors, diff, glass —
-//  stays local to this component since it's UI-only, not shared app state.)
+const norm = (s: string) => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 
 export default function LibraryPage() {
-  const { t, favorites, toggleFav, openModal } = useApp();
+  const { favorites, cabinet } = useApp();
+  const router = useRouter();
+  const params = useSearchParams();
+  const initialCat = params.get('cat');
 
-  const [search,   setSearch]   = useState('');
-  const [cat,      setCat]      = useState<CocktailCategory>('Tutti');
-  const [abvF,     setAbvF]     = useState<AbvBucket>(null);
-  const [flavors,  setFlavors]  = useState<FlavorTag[]>([]);
-  const [diffF,    setDiffF]    = useState<1|2|3|null>(null);
-  const [glassF,   setGlassF]   = useState<GlassId | null>(null);
-  const [showAdv,  setShowAdv]  = useState(false);
+  const [search,  setSearch]  = useState(params.get('q') ?? '');
+  const [cat,     setCatSt]   = useState<CocktailCategory>(
+    (COCKTAIL_CATEGORIES as readonly string[]).includes(initialCat ?? '') ? initialCat as CocktailCategory : 'Tutti');
+  const [abvF,    setAbvF]    = useState<AbvBucket>(null);
+  const [flavors, setFlavors] = useState<FlavorTag[]>([]);
+  const [glassF,  setGlassF]  = useState<GlassId | null>(null);
+  const [canMake, setCanMake] = useState(false);
+  const [sort,    setSort]    = useState<SortKey>('name');
+  const [showAdv, setShowAdv] = useState(false);
+  const q = useDebounce(search, 150);
 
-  const debouncedSearch = useDebounce(search, 200);
+  const setCat = (c: CocktailCategory) => {
+    setCatSt(c);
+    router.replace(c === 'Tutti' ? '/cocktails' : `/cocktails?cat=${encodeURIComponent(c)}`, { scroll: false });
+  };
 
   const toggleFlavor = (f: FlavorTag) =>
     setFlavors(prev => prev.includes(f) ? prev.filter(x => x !== f) : [...prev, f]);
 
-  const clearAll = () => { setAbvF(null); setFlavors([]); setDiffF(null); setGlassF(null); };
+  const activeFilters = (abvF ? 1 : 0) + flavors.length + (glassF ? 1 : 0) + (canMake ? 1 : 0);
+  const clearAll = () => { setAbvF(null); setFlavors([]); setGlassF(null); setCanMake(false); };
 
-  const activeFilters =
-    (abvF ? 1 : 0) + flavors.length + (diffF ? 1 : 0) + (glassF ? 1 : 0);
-
-  // ── FILTERED LIST ──────────────────────────────────────────────────────────
-
-  const filtered = useMemo(() => COCKTAILS.filter(c => {
-    if (cat === 'Preferiti') return favorites.has(c.id);
-    const q = debouncedSearch.toLowerCase();
-    return (
-      (cat === 'Tutti' || c.cat === cat) &&
-      (!q || c.name.toLowerCase().includes(q) || c.tags.some(tg => tg.includes(q))) &&
-      matchAbv(c.abv, abvF) &&
-      (flavors.length === 0 || flavors.every(f => c.tags.includes(f))) &&
-      (!diffF  || c.diff  === diffF) &&
-      (!glassF || c.glass === glassF)
+  const filtered = useMemo(() => {
+    const nq = norm(q.trim());
+    const abvTest = ABV_FILTERS.find(f => f.id === abvF)?.test;
+    const list = COCKTAILS.filter(c =>
+      (cat === 'Tutti' || (cat === 'Preferiti' ? favorites.has(c.id) : c.cat === cat)) &&
+      (!nq || norm(c.name).includes(nq) || c.tags.some(t => norm(t).includes(nq)) || c.ings.some(i => norm(i.name).includes(nq))) &&
+      (!abvTest || abvTest(c.abv)) &&
+      flavors.every(f => c.tags.includes(f)) &&
+      (!glassF || c.glass === glassF) &&
+      (!canMake || missingFromPantry(c, cabinet).length === 0)
     );
-  }), [debouncedSearch, cat, abvF, flavors, diffF, glassF, favorites]);
+    return list.sort(SORTS.find(s => s.id === sort)!.fn);
+  }, [q, cat, abvF, flavors, glassF, canMake, sort, favorites, cabinet]);
 
-  // ── RENDER ──────────────────────────────────────────────────────────────────
+  const glassesInUse = useMemo(() => Object.values(GLASSES).filter(g => COCKTAILS.some(c => c.glass === g.id)), []);
 
   return (
-    <div style={{ maxWidth: 1300, margin: '0 auto', padding: '90px 20px 60px' }}>
+    <div className="wrap pb-10 pt-10">
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <div className="eyebrow">Ricettario</div>
+          <h1 className="mt-2 font-display text-5xl sm:text-6xl">Cocktail</h1>
+        </div>
+        <p className="text-sm text-muted">{filtered.length} di {COCKTAILS.length} ricette</p>
+      </header>
 
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
-        <h1 style={{ fontFamily: 'Cormorant Garamond, serif', fontSize: 40, color: t.text }}>🍸 Cocktail</h1>
-        {favorites.size > 0 && (
-          <span
-            style={{ fontFamily: 'Raleway, sans-serif', fontSize: 13, color: t.gold, cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: 3 }}
-            onClick={() => setCat('Preferiti')}
-          >
-            ♥ {favorites.size} preferiti
-          </span>
-        )}
-      </div>
-      <p style={{ fontFamily: 'Raleway, sans-serif', fontSize: 14, color: t.textMuted, marginBottom: 20 }}>
-        {COCKTAILS.length} ricette · mostrando {filtered.length}
-      </p>
-
-      {/* Search + filter toggle */}
-      <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-        <input
-          value={search} onChange={e => setSearch(e.target.value)}
-          placeholder="🔍  Cerca cocktail, ingrediente o tag..."
-          style={{ flex: '1 1 240px', background: t.input, border: `1px solid ${t.inpBdr}`, borderRadius: 8, padding: '10px 14px', color: t.text, fontFamily: 'Raleway, sans-serif', fontSize: 14, outline: 'none' }}
-        />
-        <button
-          onClick={() => setShowAdv(!showAdv)}
-          style={{ background: showAdv || activeFilters > 0 ? t.goldSoft : 'none', border: `1px solid ${showAdv || activeFilters > 0 ? t.gold : t.border}`, borderRadius: 8, padding: '10px 16px', cursor: 'pointer', color: showAdv || activeFilters > 0 ? t.gold : t.textMuted, fontFamily: 'Raleway, sans-serif', fontSize: 12, fontWeight: 500, transition: 'all 0.2s', display: 'flex', alignItems: 'center', gap: 6 }}
-        >
-          ⚙ Filtri{activeFilters > 0 ? ` (${activeFilters})` : ''}
-        </button>
-      </div>
-
-      {/* Category pills */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 16 }}>
-        {COCKTAIL_CATEGORIES.map(c => (
-          <button
-            key={c}
-            onClick={() => setCat(c)}
-            style={{ background: cat === c ? t.goldSoft : 'none', border: `1px solid ${cat === c ? t.gold : t.border}`, borderRadius: 20, padding: '5px 14px', cursor: 'pointer', color: cat === c ? t.gold : t.textMuted, fontFamily: 'Raleway, sans-serif', fontSize: 12, fontWeight: cat === c ? 600 : 400, transition: 'all 0.2s' }}
-          >
-            {c === 'Preferiti' ? '♥ Preferiti' : c}
+      {/* Search + controls */}
+      <div className="sticky top-16 z-30 -mx-5 mt-8 border-b border-line/[0.07] bg-bg/95 px-5 py-3 sm:mx-0 sm:rounded-2xl sm:border sm:px-3">
+        <div className="flex gap-2">
+          <label className="relative flex-1">
+            <Icon name="search" size={17} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-muted" />
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Cerca per nome, ingrediente o gusto…"
+              className="input rounded-full pl-10" aria-label="Cerca cocktail" />
+          </label>
+          <button onClick={() => setShowAdv(s => !s)} className={`btn-ghost shrink-0 px-4 ${showAdv || activeFilters ? 'border-accent/60 text-accent' : ''}`} aria-expanded={showAdv}>
+            <Icon name="filter" size={16} /> <span className="hidden sm:inline">Filtri</span>{activeFilters > 0 && ` · ${activeFilters}`}
           </button>
-        ))}
-      </div>
+          <select value={sort} onChange={e => setSort(e.target.value as SortKey)} aria-label="Ordina"
+            className="input hidden w-auto shrink-0 cursor-pointer rounded-full pr-8 sm:block">
+            {SORTS.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+          </select>
+        </div>
+        <div className="no-scrollbar mt-3 flex gap-1.5 overflow-x-auto">
+          {COCKTAIL_CATEGORIES.map(c => (
+            <button key={c} onClick={() => setCat(c)} data-active={cat === c} className="chip">
+              {c === 'Preferiti' && <Icon name="heart" size={13} fill={cat === c} />}{c}
+              {c === 'Preferiti' && favorites.size > 0 && <span className="opacity-60">{favorites.size}</span>}
+            </button>
+          ))}
+        </div>
 
-      {/* Advanced filter panel */}
-      {showAdv && (
-        <div style={{ background: t.card, border: `1px solid ${t.border}`, borderRadius: 14, padding: '20px 24px', marginBottom: 20 }}>
-          <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
-
-            {/* ABV */}
-            <div style={{ flex: '1 1 200px' }}>
-              <div style={{ fontSize: 10, letterSpacing: '0.15em', color: t.gold, fontFamily: 'Raleway, sans-serif', textTransform: 'uppercase', fontWeight: 600, marginBottom: 10 }}>Gradazione</div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        {showAdv && (
+          <div className="mt-3 grid gap-5 border-t border-line/[0.07] pt-4 md:grid-cols-[1fr_1.4fr_1fr]">
+            <div>
+              <div className="stat-label mb-2">Gradazione</div>
+              <div className="flex flex-wrap gap-1.5">
                 {ABV_FILTERS.map(f => (
-                  <button
-                    key={String(f.id)}
-                    onClick={() => setAbvF(abvF === f.id ? null : f.id)}
-                    style={{ background: abvF === f.id ? t.goldSoft : 'none', border: `1px solid ${abvF === f.id ? t.gold : t.border}`, borderRadius: 20, padding: '4px 12px', cursor: 'pointer', color: abvF === f.id ? t.gold : t.textMuted, fontFamily: 'Raleway, sans-serif', fontSize: 11, transition: 'all 0.15s' }}
-                  >
-                    {f.label}
-                  </button>
+                  <button key={f.id} onClick={() => setAbvF(abvF === f.id ? null : f.id)} data-active={abvF === f.id} className="chip">{f.label}</button>
                 ))}
               </div>
             </div>
-
-            {/* Flavor */}
-            <div style={{ flex: '1 1 280px' }}>
-              <div style={{ fontSize: 10, letterSpacing: '0.15em', color: t.gold, fontFamily: 'Raleway, sans-serif', textTransform: 'uppercase', fontWeight: 600, marginBottom: 10 }}>Profilo di Sapore</div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            <div>
+              <div className="stat-label mb-2">Profilo</div>
+              <div className="flex flex-wrap gap-1.5">
                 {FLAVOR_TAGS.map(f => (
-                  <button
-                    key={f}
-                    onClick={() => toggleFlavor(f)}
-                    style={{ background: flavors.includes(f) ? t.goldSoft : 'none', border: `1px solid ${flavors.includes(f) ? t.gold : t.border}`, borderRadius: 20, padding: '4px 12px', cursor: 'pointer', color: flavors.includes(f) ? t.gold : t.textMuted, fontFamily: 'Raleway, sans-serif', fontSize: 11, textTransform: 'capitalize', transition: 'all 0.15s' }}
-                  >
-                    {f}
-                  </button>
+                  <button key={f} onClick={() => toggleFlavor(f)} data-active={flavors.includes(f)} className="chip capitalize">{f}</button>
                 ))}
               </div>
             </div>
-
-            {/* Difficulty + Glass */}
-            <div style={{ flex: '1 1 200px', display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+            <div className="grid content-start gap-3">
               <div>
-                <div style={{ fontSize: 10, letterSpacing: '0.15em', color: t.gold, fontFamily: 'Raleway, sans-serif', textTransform: 'uppercase', fontWeight: 600, marginBottom: 10 }}>Difficoltà</div>
-                <div style={{ display: 'flex', gap: 6 }}>
-                  {([1, 2, 3] as const).map(d => (
-                    <button
-                      key={d}
-                      onClick={() => setDiffF(diffF === d ? null : d)}
-                      style={{ background: diffF === d ? t.goldSoft : 'none', border: `1px solid ${diffF === d ? t.gold : t.border}`, borderRadius: 8, padding: '5px 12px', cursor: 'pointer', color: diffF === d ? t.gold : t.textMuted, fontSize: 12, transition: 'all 0.15s' }}
-                    >
-                      {'●'.repeat(d)}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <div style={{ fontSize: 10, letterSpacing: '0.15em', color: t.gold, fontFamily: 'Raleway, sans-serif', textTransform: 'uppercase', fontWeight: 600, marginBottom: 10 }}>Bicchiere</div>
-                <select
-                  value={glassF ?? ''}
-                  onChange={e => setGlassF((e.target.value as GlassId) || null)}
-                  style={{ background: t.input, border: `1px solid ${t.inpBdr}`, borderRadius: 8, padding: '5px 10px', color: t.text, fontFamily: 'Raleway, sans-serif', fontSize: 12, outline: 'none', cursor: 'pointer' }}
-                >
+                <div className="stat-label mb-2">Bicchiere</div>
+                <select value={glassF ?? ''} onChange={e => setGlassF((e.target.value as GlassId) || null)} className="input cursor-pointer py-2">
                   <option value="">Tutti</option>
-                  {Object.values(GLASSES).map(g => (
-                    <option key={g.id} value={g.id} style={{ background: '#0a0810' }}>{g.emoji} {g.name}</option>
-                  ))}
+                  {glassesInUse.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
                 </select>
               </div>
+              <button onClick={() => setCanMake(v => !v)} data-active={canMake} className="chip justify-center py-2">
+                <Icon name="cabinet" size={14} /> Solo quelli che posso fare
+              </button>
+              <select value={sort} onChange={e => setSort(e.target.value as SortKey)} className="input cursor-pointer py-2 sm:hidden" aria-label="Ordina">
+                {SORTS.map(s => <option key={s.id} value={s.id}>Ordina: {s.label}</option>)}
+              </select>
             </div>
+            {activeFilters > 0 && (
+              <button onClick={clearAll} className="btn-quiet justify-self-start px-0 text-sm md:col-span-3">Azzera filtri</button>
+            )}
           </div>
-
-          {activeFilters > 0 && (
-            <button onClick={clearAll} style={{ marginTop: 14, background: 'none', border: 'none', cursor: 'pointer', color: t.textMuted, fontFamily: 'Raleway, sans-serif', fontSize: 12, textDecoration: 'underline', textUnderlineOffset: 2, padding: 0 }}>
-              ✕ Cancella tutti i filtri ({activeFilters})
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Empty state */}
-      {filtered.length === 0 && (
-        <div style={{ textAlign: 'center', padding: 60, color: t.textMuted, fontFamily: 'Cormorant Garamond, serif', fontSize: 24, fontStyle: 'italic' }}>
-          {cat === 'Preferiti' ? 'Nessun preferito. Clicca ♡ su un cocktail.' : 'Nessun cocktail trovato.'}
-        </div>
-      )}
-
-      {/* Grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: 20 }}>
-        {filtered.map(c => (
-          <CocktailCard
-            key={c.id} cocktail={c} t={t}
-            onClick={() => openModal(c)}
-            favorites={favorites} onToggleFav={toggleFav}
-          />
-        ))}
+        )}
       </div>
+
+      {filtered.length === 0 ? (
+        <div className="py-24 text-center">
+          <p className="font-display text-3xl italic text-muted">
+            {cat === 'Preferiti' ? 'Nessun preferito, per ora.' : 'Nessun cocktail trovato.'}
+          </p>
+          <p className="mt-2 text-sm text-muted">
+            {cat === 'Preferiti' ? 'Tocca il cuore su una ricetta per salvarla qui.' : 'Prova a togliere qualche filtro.'}
+          </p>
+        </div>
+      ) : (
+        <div className="mt-8 grid grid-cols-2 gap-3 sm:gap-5 md:grid-cols-3 xl:grid-cols-4">
+          {filtered.map((c, i) => <CocktailCard key={c.id} cocktail={c} priority={i < 8} />)}
+        </div>
+      )}
     </div>
   );
 }

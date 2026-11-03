@@ -2,209 +2,130 @@
 // BALDI'S LAB — AI Bartender Page
 // src/components/ai/AIPage.tsx
 //
-// SECURITY NOTE: this calls our own /api/ai route (src/app/api/ai/route.ts),
-// which holds the Anthropic key server-side. It does NOT call
-// api.anthropic.com directly from the browser — that pattern is only
-// appropriate inside the standalone Claude.ai artifact (baldis-lab.jsx),
-// where the platform injects/proxies the key safely. In this real Next.js
-// app, the key must stay server-side, which is why this component is a
-// thin client over our own API route.
+// Thin client over our own /api/ai route (the Anthropic key stays server-side).
+// The greeting is UI only and is never sent: the API requires the history to
+// start with a user message.
 // ─────────────────────────────────────────────────────────────────────────────
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { Icon } from '@/components/ui/Icon';
 import { useApp } from '@/context/AppContext';
+import { INGREDIENTS } from '@/lib/data';
 
-// ── TYPES ─────────────────────────────────────────────────────────────────────
-
-interface ChatMessage {
-  role:    'user' | 'assistant';
-  content: string;
-}
-
-// ── QUICK SUGGESTIONS ─────────────────────────────────────────────────────────
+interface ChatMessage { role: 'user' | 'assistant'; content: string; }
 
 const SUGGESTIONS = [
   'Cosa posso fare con gin, Campari e vermut?',
-  'Qual è la tecnica corretta per un Dry Martini?',
-  'Suggeriscimi un cocktail estivo senza alcol',
-  'Ho vodka, lime e ginger beer, cosa preparo?',
-  'Spiegami la differenza tra shaking e stirring',
-  "Qual è l'origine del Negroni?",
+  'Un drink estivo e leggero, senza alcol',
+  'Ho vodka, lime e ginger beer: che preparo?',
+  'Differenza tra shake e stir?',
+  'Ricetta del Margarita',
 ];
 
-// ── COMPONENT ─────────────────────────────────────────────────────────────────
-// No props — reads theme from AppContext. Rendered from
-// src/app/(app)/ai/page.tsx
+const GREETING = 'Ciao! Sono il bartender del Lab. Dimmi cosa hai in casa o che serata vuoi, e ti preparo il drink giusto.';
 
 export default function AIPage() {
-  const { t, theme } = useApp();
-  const [messages, setMessages] = useState<ChatMessage[]>([{
-    role:    'assistant',
-    content: "Benvenuto nel Baldi's Lab! 🍸 Sono il tuo AI Bartender. Dimmi cosa hai nel tuo bar o quale emozione vuoi creare questa sera, e ti suggerirò il cocktail perfetto.",
-  }]);
-  const [input,   setInput]   = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error,   setError]   = useState<string | null>(null);
+  const { cabinet } = useApp();
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input,    setInput]    = useState('');
+  const [loading,  setLoading]  = useState(false);
+  const [error,    setError]    = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [messages, loading]);
 
-  // ── API CALL — via OUR server route, not Anthropic directly ────────────────
-
-  const send = async () => {
-    const text = input.trim();
-    if (!text || loading) return;
-
-    const userMsg: ChatMessage = { role: 'user', content: text };
-    const newHistory = [...messages, userMsg];
-    setMessages(newHistory);
+  const send = async (text = input) => {
+    const content = text.trim();
+    if (!content || loading) return;
+    const history = [...messages, { role: 'user' as const, content }];
+    setMessages(history);
     setInput('');
     setLoading(true);
     setError(null);
-
     try {
       const res = await fetch('/api/ai', {
-        method:  'POST',
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ messages: newHistory }),
+        body: JSON.stringify({ messages: history }),
       });
-
-      if (res.status === 429) {
-        setError('Troppe richieste. Riprova tra un minuto.');
-        return;
-      }
-      if (!res.ok) {
-        throw new Error(`API error: ${res.status}`);
-      }
-
-      const data  = await res.json() as { content?: string; error?: string };
-      const reply = data.content ?? 'Mi dispiace, si è verificato un errore. Riprova.';
-      setMessages(prev => [...prev, { role: 'assistant', content: reply }]);
+      const data = await res.json().catch(() => ({})) as { content?: string; error?: string };
+      if (!res.ok) { setError(data.error ?? 'Qualcosa è andato storto. Riprova.'); return; }
+      setMessages(m => [...m, { role: 'assistant', content: data.content ?? '…' }]);
     } catch {
-      setMessages(prev => [...prev, { role: 'assistant', content: 'Errore di connessione. Riprova tra un momento.' }]);
+      setError('Connessione assente. Riprova tra un momento.');
     } finally {
       setLoading(false);
+      inputRef.current?.focus();
     }
   };
 
-  // ── RENDER ────────────────────────────────────────────────────────────────
-
-  const bubbleStyle = (isUser: boolean): React.CSSProperties => ({
-    maxWidth: '76%',
-    background:  isUser ? t.goldSoft : t.card,
-    border:      `1px solid ${isUser ? t.gold + '30' : t.border}`,
-    borderRadius: isUser ? '20px 20px 4px 20px' : '20px 20px 20px 4px',
-    padding:     '12px 16px',
-  });
+  const fromBar = () => {
+    const names = INGREDIENTS.filter(i => cabinet.has(i.id)).map(i => i.name);
+    if (names.length) send(`Nel mio bar ho: ${names.join(', ')}. Cosa posso preparare?`);
+  };
 
   return (
-    <div style={{ maxWidth: 800, margin: '0 auto', padding: '90px 20px 20px', height: '100vh', display: 'flex', flexDirection: 'column' }}>
+    <div className="wrap flex min-h-[calc(100vh-4rem)] max-w-3xl flex-col pb-6 pt-10">
+      <header>
+        <div className="eyebrow">AI Bartender</div>
+        <h1 className="mt-2 font-display text-5xl">Chiedi al bancone</h1>
+      </header>
 
-      {/* Header */}
-      <div style={{ marginBottom: 24 }}>
-        <h1 style={{ fontFamily: 'Cormorant Garamond, serif', fontSize: 40, color: t.text, marginBottom: 4 }}>🤖 AI Bartender</h1>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#4CAF50', boxShadow: '0 0 8px #4CAF50' }} />
-          <p style={{ fontFamily: 'Raleway, sans-serif', fontSize: 13, color: t.textMuted }}>
-            Claude AI · Il tuo maestro barman digitale, disponibile 24/7
-          </p>
-        </div>
-      </div>
-
-      {/* Message list */}
-      <div style={{ flex: 1, overflowY: 'auto', marginBottom: 16, paddingRight: 4 }}>
-        {messages.map((m, i) => (
-          <div
-            key={i}
-            style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start', marginBottom: 14, alignItems: 'flex-end', gap: 10 }}
-          >
-            {m.role === 'assistant' && (
-              <div style={{ width: 32, height: 32, borderRadius: '50%', background: t.goldSoft, border: `1px solid ${t.gold}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, flexShrink: 0 }}>
-                🍸
-              </div>
-            )}
-            <div style={bubbleStyle(m.role === 'user')}>
-              <p style={{ fontFamily: 'Raleway, sans-serif', fontSize: 14, color: t.text, lineHeight: 1.7, margin: 0, whiteSpace: 'pre-wrap' }}>
-                {m.content}
-              </p>
-            </div>
-          </div>
-        ))}
-
-        {/* Loading indicator */}
+      <div className="mt-8 flex-1 space-y-4" aria-live="polite">
+        <Bubble role="assistant">{GREETING}</Bubble>
+        {messages.map((m, i) => <Bubble key={i} role={m.role}>{m.content}</Bubble>)}
         {loading && (
-          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10, marginBottom: 14 }}>
-            <div style={{ width: 32, height: 32, borderRadius: '50%', background: t.goldSoft, border: `1px solid ${t.gold}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14 }}>
-              🍸
-            </div>
-            <div style={bubbleStyle(false)}>
-              <div style={{ display: 'flex', gap: 5, alignItems: 'center' }}>
-                {[0, 1, 2].map(i => (
-                  <span
-                    key={i}
-                    style={{ width: 8, height: 8, borderRadius: '50%', background: t.gold, display: 'inline-block', animation: `glowPulse 1.2s ${i * 0.3}s ease-in-out infinite` }}
-                  />
-                ))}
-              </div>
-            </div>
-          </div>
+          <Bubble role="assistant">
+            <span className="flex gap-1.5 py-1">
+              {[0, 1, 2].map(i => <span key={i} className="h-2 w-2 rounded-full bg-accent" style={{ animation: `dots 1.2s ${i * 0.2}s infinite` }} />)}
+            </span>
+          </Bubble>
         )}
-
         <div ref={endRef} />
       </div>
 
-      {/* Quick suggestions (only on first load) */}
-      {messages.length === 1 && (
-        <div style={{ marginBottom: 14 }}>
-          <div style={{ fontSize: 10, letterSpacing: '0.2em', color: t.textMuted, fontFamily: 'Raleway, sans-serif', marginBottom: 10 }}>DOMANDE FREQUENTI</div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {SUGGESTIONS.map((s, i) => (
-              <button
-                key={i}
-                onClick={() => setInput(s)}
-                style={{ background: t.tag, border: `1px solid ${t.border}`, borderRadius: 20, padding: '6px 14px', cursor: 'pointer', color: t.textMuted, fontFamily: 'Raleway, sans-serif', fontSize: 12, transition: 'all 0.2s' }}
-              >
-                {s}
-              </button>
-            ))}
-          </div>
+      {messages.length === 0 && (
+        <div className="mt-6 flex flex-wrap gap-2">
+          {cabinet.size > 0 && (
+            <button onClick={fromBar} className="chip" data-active="true"><Icon name="cabinet" size={14} /> Usa il mio bar ({cabinet.size})</button>
+          )}
+          {SUGGESTIONS.map(s => <button key={s} onClick={() => send(s)} className="chip">{s}</button>)}
         </div>
       )}
 
-      {/* Rate limit error */}
-      {error && (
-        <div style={{ padding: '10px 16px', marginBottom: 10, background: 'rgba(255,107,107,0.1)', border: '1px solid rgba(255,107,107,0.3)', borderRadius: 8, color: '#FF6B6B', fontFamily: 'Raleway, sans-serif', fontSize: 13 }}>
-          ⚠ {error}
-        </div>
-      )}
+      {error && <p className="mt-4 rounded-xl border border-accent-2/30 bg-accent-2/10 px-4 py-2.5 text-sm text-accent-2">{error}</p>}
 
-      {/* Input bar */}
-      <div style={{ display: 'flex', gap: 10, padding: '14px 16px', background: t.card, border: `1px solid ${t.border}`, borderRadius: 14 }}>
-        <input
+      <form onSubmit={e => { e.preventDefault(); send(); }}
+        className="sticky bottom-4 mt-6 flex items-end gap-2 rounded-3xl border border-line/10 bg-surface p-2 shadow-xl shadow-black/20">
+        <textarea
+          ref={inputRef}
           value={input}
+          rows={1}
           onChange={e => setInput(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), send())}
-          placeholder="Chiedi al tuo bartender AI..."
-          style={{ flex: 1, background: 'none', border: 'none', color: t.text, outline: 'none', fontFamily: 'Raleway, sans-serif', fontSize: 14 }}
+          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
+          placeholder="Scrivi al bartender…"
+          aria-label="Messaggio"
+          className="max-h-40 flex-1 resize-none bg-transparent px-3 py-2.5 text-[15px] text-text outline-none placeholder:text-muted/70"
         />
-        <button
-          onClick={send}
-          disabled={loading || !input.trim()}
-          style={{
-            background: loading || !input.trim()
-              ? 'none'
-              : `linear-gradient(135deg,${t.copper},${t.gold})`,
-            border:  `1px solid ${loading || !input.trim() ? t.border : t.gold}`,
-            borderRadius: 8, padding: '8px 20px', cursor: loading || !input.trim() ? 'default' : 'pointer',
-            color:  loading || !input.trim() ? t.textSub : (theme === 'day' ? '#2a1808' : '#0a0810'),
-            fontFamily: 'Raleway, sans-serif', fontSize: 13, fontWeight: 600, transition: 'all 0.2s',
-          }}
-        >
-          Invia
+        <button type="submit" disabled={loading || !input.trim()} className="btn-primary h-11 w-11 shrink-0 p-0" aria-label="Invia">
+          <Icon name="send" size={17} />
         </button>
+      </form>
+    </div>
+  );
+}
+
+function Bubble({ role, children }: { role: 'user' | 'assistant'; children: React.ReactNode }) {
+  const me = role === 'user';
+  return (
+    <div className={`flex gap-3 ${me ? 'justify-end' : ''}`}>
+      {!me && (
+        <span className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent/10 text-accent"><Icon name="sparkle" size={15} /></span>
+      )}
+      <div className={`max-w-[85%] whitespace-pre-wrap rounded-3xl px-4 py-3 text-[15px] leading-relaxed ${me ? 'rounded-br-lg bg-accent text-on-accent' : 'rounded-tl-lg border border-line/[0.07] bg-surface/70'}`}>
+        {children}
       </div>
     </div>
   );

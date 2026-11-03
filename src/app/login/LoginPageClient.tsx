@@ -1,63 +1,33 @@
 // src/app/login/LoginPageClient.tsx
-
 'use client';
 
+import { useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { AppProvider, useApp } from '@/context/AppContext';
 import { AuthModal } from '@/components/layout/NavBar';
-import { THEMES } from '@/lib/themes';
-import type { AuthUser } from '@/context/AppContext';
 
-export default function LoginPageClient() {
+function LoginInner() {
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const params = useSearchParams();
+  const { user } = useApp();
+  const redirect = params.get('redirect');
+  const error = params.get('error');
+  const target = redirect && redirect.startsWith('/') && !redirect.startsWith('//') ? redirect : '/home';
 
-  const redirect = searchParams.get('redirect') ?? '/home';
-  const error = searchParams.get('error');
-  const t = THEMES.night;
-
-  function handleLogin(_u: AuthUser) {
-    // Real Supabase auth happens inside AuthModal's onLogin prop.
-    // OAuth providers redirect through /auth/callback.
-    router.replace(redirect);
-  }
+  useEffect(() => { if (user) router.replace(target); }, [user, router, target]);
 
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        position: 'relative',
-        background:
-          'radial-gradient(ellipse at 18% 60%, #150b2a 0%, #08080f 52%, #0a0e1e 100%)',
-      }}
-    >
+    <div className="min-h-screen">
       {error && (
-        <div
-          style={{
-            position: 'fixed',
-            top: 20,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            background: 'rgba(255,107,107,0.12)',
-            border: '1px solid rgba(255,107,107,0.4)',
-            color: '#FF6B6B',
-            fontFamily: 'Raleway, sans-serif',
-            fontSize: 13,
-            padding: '10px 20px',
-            borderRadius: 8,
-            zIndex: 999,
-            whiteSpace: 'nowrap',
-          }}
-        >
-          ⚠ Errore di autenticazione: {decodeURIComponent(error)}
+        <div className="fixed left-1/2 top-5 z-[60] -translate-x-1/2 rounded-full border border-accent-2/40 bg-surface px-5 py-2 text-sm text-accent-2">
+          Errore di autenticazione: {decodeURIComponent(error)}
         </div>
       )}
-
-      <AuthModal
-        t={t}
-        theme="night"
-        onClose={() => router.back()}
-        onLogin={handleLogin}
-      />
+      <AuthModal onClose={() => router.push(target)} />
     </div>
   );
+}
+
+export default function LoginPageClient() {
+  return <AppProvider><LoginInner /></AppProvider>;
 }

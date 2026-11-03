@@ -2,22 +2,19 @@
 // BALDI'S LAB — App Context
 // src/context/AppContext.tsx
 //
-// Client-side shared state, consumed by src/app/(app)/layout.tsx and every
-// page underneath it. Replaces the old single-component SPA approach
-// (BaldisLabApp.tsx) with a Context Provider so that individual routes
-// (src/app/(app)/*/page.tsx) can be real, separate Next.js pages while
-// still sharing theme / favorites / ratings / history / auth state.
+// Client-side shared state for every (app) route: theme, favorites, ratings,
+// history, bar cabinet and auth. Persisted in localStorage (guest-friendly);
+// Supabase auth is used only when real credentials are configured.
 //
-// Persistence is localStorage for now (guest-friendly). Sprint 7 swaps this
-// for Supabase-backed persistence behind the same hook API, so consuming
-// components do not need to change.
+// Pages render immediately on the server — there is no "wait for hydration"
+// blank screen any more; stored values are merged in after mount.
 // ─────────────────────────────────────────────────────────────────────────────
 'use client';
 
-import { createContext, useContext, useEffect, useState, useCallback } from 'react';
-import { THEMES } from '@/lib/themes';
-import type { Theme, ThemeId } from '@/lib/themes';
-import type { Cocktail } from '@/lib/data';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { isThemeId } from '@/lib/themes';
+import type { ThemeId } from '@/lib/themes';
+import { SUPABASE_ENABLED } from '@/lib/config';
 
 // ── TYPES ─────────────────────────────────────────────────────────────────────
 
@@ -27,217 +24,212 @@ export interface AuthUser {
   provider?:   'google' | 'apple' | 'email';
 }
 
+export interface LoginRequest {
+  provider:     'google' | 'apple' | 'email';
+  mode?:        'login' | 'register';
+  email?:       string;
+  password?:    string;
+  displayName?: string;
+}
+
 interface AppContextValue {
-  // Theme
   theme:        ThemeId;
-  t:            Theme;
   setTheme:     (id: ThemeId) => void;
 
-  // Age gate
-  ageOk:        boolean;
-  verifyAge:    () => void;
-
-  // Auth (mock for now — Sprint 7 wires real Supabase Auth behind this same API)
   user:         AuthUser | null;
-  login:        (u: AuthUser) => void;
-  logout:       () => void;
+  login:        (req: LoginRequest) => Promise<string | null>;   // returns an error message or null
+  logout:       () => Promise<void>;
   showAuth:     boolean;
   openAuth:     () => void;
   closeAuth:    () => void;
+  authEnabled:  boolean;
 
-  // Favorites
   favorites:    Set<number>;
   toggleFav:    (id: number) => void;
 
-  // Ratings
   ratings:      Record<number, number>;
   rateCocktail: (id: number, stars: number) => void;
 
-  // History
   history:      number[];
   pushHistory:  (id: number) => void;
 
-  // Cocktail detail modal (used by cards on Home/Library when not navigating to /cocktails/[slug])
-  modal:        Cocktail | null;
-  openModal:    (c: Cocktail) => void;
-  closeModal:   () => void;
-
-  // Hydration flag — avoids SSR/client localStorage mismatch flashes
-  hydrated:     boolean;
+  cabinet:      Set<number>;
+  toggleOwned:  (id: number) => void;
+  setCabinet:   (ids: number[]) => void;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
 
-// ── LOCALSTORAGE HELPERS ──────────────────────────────────────────────────────
+// ── LOCALSTORAGE ──────────────────────────────────────────────────────────────
 
-const LS_KEYS = {
-  ageOk:     'bl_age_ok',
+const LS = {
   theme:     'bl_theme',
   favorites: 'bl_favorites',
   ratings:   'bl_ratings',
   history:   'bl_history',
+  cabinet:   'bl_cabinet',
+  user:      'bl_user',
 } as const;
 
-function loadLS<T>(key: string, fallback: T): T {
-  if (typeof window === 'undefined') return fallback;
+function load<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
+    return raw ? (JSON.parse(raw) as T) : fallback;
   } catch { return fallback; }
 }
 
-function saveLS(key: string, value: unknown) {
-  if (typeof window === 'undefined') return;
-  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+function save(key: string, value: unknown) {
+  try {
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify(value));
+  } catch {}
 }
+
+// A sensible starter bar: gin, campari, vermouth, rum, lime, syrup, soda…
+const DEFAULT_CABINET = [2, 4, 6, 8, 12, 14, 15, 21, 23, 26, 27, 28];
+
+const toUser = (u: { email?: string; user_metadata?: Record<string, unknown> }): AuthUser => ({
+  email: u.email ?? '',
+  displayName: (u.user_metadata?.display_name as string | undefined) ?? (u.email ?? 'ospite').split('@')[0],
+});
 
 // ── PROVIDER ──────────────────────────────────────────────────────────────────
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [theme,     setThemeState] = useState<ThemeId>('night');
-  const [ageOk,     setAgeOk]      = useState(false);
-  const [hydrated,  setHydrated]   = useState(false);
-  const [favorites, setFavorites]  = useState<Set<number>>(new Set());
+  const [ready,     setReady]      = useState(false);
+  const [favorites, setFavorites]  = useState<Set<number>>(() => new Set());
   const [ratings,   setRatings]    = useState<Record<number, number>>({});
   const [history,   setHistory]    = useState<number[]>([]);
+  const [cabinet,   setCabinetSt]  = useState<Set<number>>(() => new Set(DEFAULT_CABINET));
   const [user,      setUser]       = useState<AuthUser | null>(null);
   const [showAuth,  setShowAuth]   = useState(false);
-  const [modal,     setModal]      = useState<Cocktail | null>(null);
 
-  // Hydrate once on mount (client-only)
+  // Merge stored state once, after the server-rendered page is on screen
   useEffect(() => {
-    setAgeOk(loadLS(LS_KEYS.ageOk, false));
-    setThemeState(loadLS(LS_KEYS.theme, 'night'));
-    setFavorites(new Set(loadLS<number[]>(LS_KEYS.favorites, [])));
-    setRatings(loadLS(LS_KEYS.ratings, {}));
-    setHistory(loadLS(LS_KEYS.history, []));
-    setHydrated(true);
+    const th = load<unknown>(LS.theme, 'night');
+    if (isThemeId(th)) setThemeState(th);
+    setFavorites(new Set(load<number[]>(LS.favorites, [])));
+    setRatings(load(LS.ratings, {}));
+    setHistory(load(LS.history, []));
+    setCabinetSt(new Set(load<number[]>(LS.cabinet, DEFAULT_CABINET)));
+    if (!SUPABASE_ENABLED) setUser(load<AuthUser | null>(LS.user, null));
+    setReady(true);
 
-    // ── Supabase Auth: sync user state ────────────────────────────────────────
-    // Lazy import so the browser client is only instantiated client-side.
+    if (!SUPABASE_ENABLED) return;
+    let unsub: (() => void) | undefined;
     import('@/lib/supabase/browser').then(({ getSupabaseBrowserClient }) => {
-      const supabase = getSupabaseBrowserClient();
-
-      // Check existing session on mount
-      supabase.auth.getUser().then(({ data: { user } }) => {
-        if (user) {
-          setUser({
-            email:       user.email!,
-            displayName: (user.user_metadata?.display_name as string | undefined)
-                         ?? user.email!.split('@')[0],
-          });
-        }
+      const sb = getSupabaseBrowserClient();
+      sb.auth.getUser().then(({ data }) => { if (data.user) setUser(toUser(data.user)); });
+      const { data } = sb.auth.onAuthStateChange((_e, session) => {
+        setUser(session?.user ? toUser(session.user) : null);
       });
-
-      // Listen for sign-in / sign-out events
-      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-        if (session?.user) {
-          setUser({
-            email:       session.user.email!,
-            displayName: (session.user.user_metadata?.display_name as string | undefined)
-                         ?? session.user.email!.split('@')[0],
-          });
-        } else {
-          setUser(null);
-        }
-      });
-
-      return () => subscription.unsubscribe();
+      unsub = () => data.subscription.unsubscribe();
     });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => unsub?.();
   }, []);
 
-  // Persist on change (skip the initial pre-hydration render)
-  useEffect(() => { if (hydrated) saveLS(LS_KEYS.theme, theme); },               [theme, hydrated]);
-  useEffect(() => { if (hydrated) saveLS(LS_KEYS.favorites, [...favorites]); },  [favorites, hydrated]);
-  useEffect(() => { if (hydrated) saveLS(LS_KEYS.ratings, ratings); },           [ratings, hydrated]);
-  useEffect(() => { if (hydrated) saveLS(LS_KEYS.history, history); },           [history, hydrated]);
+  // Persist after the initial merge
+  useEffect(() => { if (ready) save(LS.favorites, [...favorites]); }, [favorites, ready]);
+  useEffect(() => { if (ready) save(LS.ratings, ratings); },         [ratings, ready]);
+  useEffect(() => { if (ready) save(LS.history, history); },         [history, ready]);
+  useEffect(() => { if (ready) save(LS.cabinet, [...cabinet]); },    [cabinet, ready]);
 
-  const setTheme = useCallback((id: ThemeId) => setThemeState(id), []);
-
-  const verifyAge = useCallback(() => {
-    setAgeOk(true);
-    saveLS(LS_KEYS.ageOk, true);
+  const setTheme = useCallback((id: ThemeId) => {
+    setThemeState(id);
+    document.documentElement.dataset.theme = id;
+    save(LS.theme, id);
   }, []);
 
   const toggleFav = useCallback((id: number) => {
     setFavorites(prev => {
       const n = new Set(prev);
-      n.has(id) ? n.delete(id) : n.add(id);
+      if (n.has(id)) n.delete(id); else n.add(id);
       return n;
     });
   }, []);
 
   const rateCocktail = useCallback((id: number, stars: number) => {
     setRatings(prev => {
-      if (stars === 0) {
-        const { [id]: _removed, ...rest } = prev;
-        return rest;
-      }
-      return { ...prev, [id]: stars };
+      const next = { ...prev };
+      if (stars === 0) delete next[id]; else next[id] = stars;
+      return next;
     });
   }, []);
 
   const pushHistory = useCallback((id: number) => {
-    setHistory(prev => [id, ...prev.filter(x => x !== id)].slice(0, 20));
+    setHistory(prev => (prev[0] === id ? prev : [id, ...prev.filter(x => x !== id)].slice(0, 20)));
   }, []);
 
-  const openModal  = useCallback((c: Cocktail) => { setModal(c); pushHistory(c.id); }, [pushHistory]);
-  const closeModal = useCallback(() => setModal(null), []);
+  const toggleOwned = useCallback((id: number) => {
+    setCabinetSt(prev => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  }, []);
 
-  const login = useCallback(async (u: AuthUser) => {
+  const setCabinet = useCallback((ids: number[]) => setCabinetSt(new Set(ids)), []);
+
+  const login = useCallback(async (req: LoginRequest): Promise<string | null> => {
+    if (!SUPABASE_ENABLED) {
+      if (req.provider !== 'email') return 'Accesso social non configurato: usa email e password.';
+      const u: AuthUser = {
+        email: req.email ?? '',
+        displayName: req.displayName || (req.email ?? 'ospite').split('@')[0],
+        provider: 'email',
+      };
+      setUser(u);
+      save(LS.user, u);
+      setShowAuth(false);
+      return null;
+    }
+
     const { getSupabaseBrowserClient } = await import('@/lib/supabase/browser');
-    const supabase = getSupabaseBrowserClient();
+    const sb = getSupabaseBrowserClient();
 
-    if (u.provider === 'google') {
-      await supabase.auth.signInWithOAuth({
-        provider: 'google',
+    if (req.provider !== 'email') {
+      const { error } = await sb.auth.signInWithOAuth({
+        provider: req.provider,
         options: { redirectTo: `${window.location.origin}/auth/callback` },
       });
-      // Google OAuth redirects the page — execution stops here
-      return;
+      return error?.message ?? null;
     }
 
-    if (u.provider === 'apple') {
-      await supabase.auth.signInWithOAuth({
-        provider: 'apple',
-        options: { redirectTo: `${window.location.origin}/auth/callback` },
-      });
-      return;
-    }
-
-    // Email / password (u.provider === 'email')
-    // In the real flow, AuthModal collects the password and passes it separately.
-    // For Sprint 7 we keep the email-only mock until the UI is updated in Sprint 8.
-    setUser({ email: u.email, displayName: u.displayName });
+    const creds = { email: req.email ?? '', password: req.password ?? '' };
+    const { error } = req.mode === 'register'
+      ? await sb.auth.signUp({ ...creds, options: { data: { display_name: req.displayName } } })
+      : await sb.auth.signInWithPassword(creds);
+    if (error) return error.message;
     setShowAuth(false);
-    // Sprint 8: replace with:
-    // const { error } = await supabase.auth.signInWithPassword({ email: u.email, password: u.password });
-    // if (error) throw error;
+    return null;
   }, []);
 
   const logout = useCallback(async () => {
-    const { getSupabaseBrowserClient } = await import('@/lib/supabase/browser');
-    const supabase = getSupabaseBrowserClient();
-    await supabase.auth.signOut();
-    // onAuthStateChange will set user to null automatically
+    if (SUPABASE_ENABLED) {
+      const { getSupabaseBrowserClient } = await import('@/lib/supabase/browser');
+      await getSupabaseBrowserClient().auth.signOut();
+    }
+    setUser(null);
+    save(LS.user, null);
   }, []);
 
-  const value: AppContextValue = {
-    theme, t: THEMES[theme], setTheme,
-    ageOk, verifyAge,
-    user, login, logout, showAuth, openAuth: () => setShowAuth(true), closeAuth: () => setShowAuth(false),
+  const openAuth  = useCallback(() => setShowAuth(true), []);
+  const closeAuth = useCallback(() => setShowAuth(false), []);
+
+  const value = useMemo<AppContextValue>(() => ({
+    theme, setTheme,
+    user, login, logout, showAuth, openAuth, closeAuth, authEnabled: SUPABASE_ENABLED,
     favorites, toggleFav,
     ratings, rateCocktail,
     history, pushHistory,
-    modal, openModal, closeModal,
-    hydrated,
-  };
+    cabinet, toggleOwned, setCabinet,
+  }), [theme, setTheme, user, login, logout, showAuth, openAuth, closeAuth,
+       favorites, toggleFav, ratings, rateCocktail, history, pushHistory,
+       cabinet, toggleOwned, setCabinet]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
-
-// ── HOOK ──────────────────────────────────────────────────────────────────────
 
 export function useApp(): AppContextValue {
   const ctx = useContext(AppContext);

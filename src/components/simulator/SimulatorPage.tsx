@@ -1,674 +1,559 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// BALDI'S LAB — Simulator Page (Canvas 2D Ultra-Realistico)
+// BALDI'S LAB — Simulator ("Laboratorio")
 // src/components/simulator/SimulatorPage.tsx
+//
+// What the simulator models:
+//  • liquid level from the real volume of each glass profile (lib/glass.ts)
+//  • ice displacement, overflow protection
+//  • unmixed liquids settle by density; stirring/shaking blends them and adds
+//    melt-water (20% / 27%), which lowers the ABV like it does at the bar
+//  • live recipe recognition + a guided mode that checks your doses
+// Rendering is a single SVG with CSS-only animation; the only rAF loop runs
+// while you are actually holding the pour button.
 // ─────────────────────────────────────────────────────────────────────────────
 'use client';
 
-import { useState, useCallback, useRef, useEffect } from 'react';
-import { useApp } from '@/context/AppContext';
-import { GLASSES, INGREDIENTS, COCKTAILS } from '@/lib/data';
-import { calcStats, matchCocktail } from '@/lib/utils';
-import type { GlassId } from '@/lib/data';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
+import { Glass, iceDisplacement } from '@/components/glass/Glass';
+import type { IceKind, RimKind, GlassLayer } from '@/components/glass/Glass';
+import { artLayers } from '@/components/cocktail/CocktailArt';
+import { Icon } from '@/components/ui/Icon';
+import { SHAPES } from '@/lib/glass';
+import { GLASSES, INGREDIENTS, INGREDIENT_CATEGORIES, COCKTAILS, getCocktailBySlug, cocktailHref } from '@/lib/data';
+import type { GlassId, Ingredient, Cocktail } from '@/lib/data';
+import {
+  blendColors, canon, drinkStats, matchRecipes, physics, techniqueOf, DILUTION,
+} from '@/lib/mix';
+import type { MixMethod } from '@/lib/mix';
 
-export type IceType = null | 'cubes' | 'crushed' | 'sphere' | 'stick';
+// ── TYPES & OPTIONS ───────────────────────────────────────────────────────────
 
-interface SimLayer {
-  name: string;
-  amount: number;
-  color: string;
-}
+interface SimPart { name: string; amount: number; color: string; mixed: boolean; }
+interface Snapshot { parts: SimPart[]; water: number; }
 
-const ICE_OPTIONS: { id: IceType; label: string; emoji: string }[] = [
-  { id: null, label: 'Nessuno', emoji: '🚫' },
-  { id: 'cubes', label: 'Cubetti', emoji: '🧊' },
-  { id: 'crushed', label: 'Crushed', emoji: '❄️' },
-  { id: 'sphere', label: 'Sfera', emoji: '⚪' },
-  { id: 'stick', label: 'Stick', emoji: '➖' },
+const POUR_RATE = 40;   // ml per second while holding
+const HOLD_MS   = 220;  // press longer than this = continuous pour
+const WATER     = 'rgba(235,245,255,0.18)';
+
+const ICE_OPTIONS: { id: IceKind; label: string }[] = [
+  { id: null, label: 'Senza' }, { id: 'cubes', label: 'Cubetti' }, { id: 'rock', label: 'Blocco' },
+  { id: 'sphere', label: 'Sfera' }, { id: 'crushed', label: 'Tritato' }, { id: 'stick', label: 'Stick' },
 ];
 
-const GARNISH_OPTIONS = [
-  'Nessuno', 'Scorza Arancia', 'Scorza Lime', 'Fetta Lime',
-  'Fetta Arancia', 'Menta', 'Ciliegia', 'Ombrellino', 'Sale', 'Zucchero',
+const GARNISHES = [
+  'Nessuna', 'Fetta di lime', 'Scorza di lime', 'Fetta di limone', 'Scorza di limone',
+  "Fetta d'arancia", "Scorza d'arancia", 'Ciliegia', 'Menta', 'Oliva', 'Ananas',
+  'Ombrellino', 'Chicchi di caffè', 'Cetriolo',
 ];
 
-function blendColors(layers: SimLayer[]): string {
-  if (layers.length === 0) return 'transparent';
-  let r = 0, g = 0, b = 0, total = 0;
-  layers.forEach(l => {
-    let hex = l.color.replace('#', '');
-    if (hex.length === 3) hex = hex.split('').map(c => c + c).join('');
-    const num = parseInt(hex, 16);
-    r += ((num >> 16) & 255) * l.amount;
-    g += ((num >> 8) & 255) * l.amount;
-    b += (num & 255) * l.amount;
-    total += l.amount;
-  });
-  return `rgba(${Math.round(r / total)}, ${Math.round(g / total)}, ${Math.round(b / total)}, 0.90)`;
+/** Pick the simulator garnish closest to a recipe's garnish text. */
+function garnishFor(text: string): string {
+  const g = text.toLowerCase();
+  const peel = g.includes('scorza');
+  for (const k of ['ombrellino', 'oliva', 'ciliegia', 'menta', 'ananas', 'cetriolo'] as const) {
+    if (g.includes(k)) return GARNISHES.find(x => x.toLowerCase().includes(k))!;
+  }
+  if (g.includes('caffè')) return 'Chicchi di caffè';
+  if (g.includes('arancia')) return peel ? "Scorza d'arancia" : "Fetta d'arancia";
+  if (/\blime\b/.test(g)) return peel ? 'Scorza di lime' : 'Fetta di lime';
+  if (g.includes('limone')) return peel ? 'Scorza di limone' : 'Fetta di limone';
+  return 'Nessuna';
 }
 
-// ── COMPONENTE CANVAS 2D ULTRA-REALISTICO ────────────────────────────────────
+const GLASS_ORDER: GlassId[] = ['oldfashioned', 'highball', 'collins', 'coupe', 'martini', 'margarita', 'wine', 'flute', 'hurricane', 'whisky', 'shot'];
 
-interface GlassCanvasProps {
-  glassId: GlassId;
-  layers: SimLayer[];
-  ice: IceType;
-  salt: boolean;
-  garnish: string;
-  pourColor: string | null;
-  hasStraw: boolean;
-  isMixed: boolean;
-  isMixingAnim: boolean;
-}
+const addTo = (parts: SimPart[], ing: { name: string; color: string }, ml: number): SimPart[] => {
+  const i = parts.findIndex(p => p.name === ing.name && !p.mixed);
+  if (i === -1) return [...parts, { name: ing.name, amount: ml, color: ing.color, mixed: false }];
+  const next = parts.slice();
+  next[i] = { ...next[i], amount: next[i].amount + ml };
+  return next;
+};
 
-function GlassCanvas({
-  glassId,
-  layers,
-  ice,
-  salt,
-  garnish,
-  pourColor,
-  hasStraw,
-  isMixed,
-  isMixingAnim,
-}: GlassCanvasProps) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const animFrameRef = useRef<number>(0);
-  const mixAngleRef = useRef<number>(0);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const dpr = window.devicePixelRatio || 1;
-    const width = 280;
-    const height = 340;
-    canvas.width = width * dpr;
-    canvas.height = height * dpr;
-    ctx.scale(dpr, dpr);
-
-    let wavePhase = 0;
-
-    const render = () => {
-      ctx.clearRect(0, 0, width, height);
-      wavePhase += 0.06;
-      if (isMixingAnim) mixAngleRef.current += 0.15;
-
-      const centerX = width / 2;
-      const bottomY = height - 45;
-
-      let topW = 60;
-      let botW = 45;
-      let glassH = 180;
-      let stemH = 0;
-
-      if (glassId === 'highball' || glassId === 'collins') {
-        topW = 52; botW = 48; glassH = 220;
-      } else if (glassId === 'coupe' || glassId === 'martini') {
-        topW = 85; botW = 14; glassH = 95; stemH = 105;
-      } else if (glassId === 'flute') {
-        topW = 32; botW = 18; glassH = 160; stemH = 85;
-      } else if (glassId === 'whisky' || glassId === 'oldfashioned') {
-        topW = 62; botW = 56; glassH = 145;
-      }
-
-      const glassTopY = bottomY - glassH - stemH;
-      const glassBotY = bottomY - stemH;
-
-      // Ombra proiettata alla base
-      ctx.save();
-      ctx.beginPath();
-      ctx.ellipse(centerX, bottomY + 10, botW + 12, 7, 0, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
-      ctx.fill();
-      ctx.restore();
-
-      const getGlassPath = () => {
-        const path = new Path2D();
-        path.moveTo(centerX - topW, glassTopY);
-        path.lineTo(centerX - botW, glassBotY - 8);
-        path.quadraticCurveTo(centerX - botW, glassBotY, centerX, glassBotY);
-        path.quadraticCurveTo(centerX + botW, glassBotY, centerX + botW, glassBotY - 8);
-        path.lineTo(centerX + topW, glassTopY);
-        path.closePath();
-        return path;
-      };
-
-      const glassPath = getGlassPath();
-
-      // Rendering Liquido interno
-      const totalVol = layers.reduce((acc, l) => acc + l.amount, 0);
-      const capacity = GLASSES[glassId]?.capacity || 300;
-      const fillRatio = Math.min(0.92, totalVol / capacity);
-
-      if (totalVol > 0) {
-        ctx.save();
-        ctx.clip(glassPath);
-
-        const liquidTopY = glassBotY - (glassH * fillRatio);
-
-        if (isMixed || isMixingAnim) {
-          ctx.fillStyle = blendColors(layers);
-          ctx.beginPath();
-          ctx.rect(centerX - topW - 20, liquidTopY, (topW + 20) * 2, glassBotY - liquidTopY);
-          ctx.fill();
-        } else {
-          let currentY = glassBotY;
-          const availableH = glassBotY - liquidTopY;
-
-          layers.forEach((layer) => {
-            const layerH = (layer.amount / totalVol) * availableH;
-            const nextY = currentY - layerH;
-
-            ctx.fillStyle = layer.color;
-            ctx.beginPath();
-            ctx.rect(0, nextY - 0.5, width, layerH + 1);
-            ctx.fill();
-
-            currentY = nextY;
-          });
-        }
-
-        // Superficie con vortice o onda
-        const surfW = botW + (topW - botW) * fillRatio;
-        ctx.beginPath();
-        const vortexDepth = isMixingAnim ? Math.sin(mixAngleRef.current) * 6 : 0;
-        ctx.ellipse(centerX, liquidTopY + vortexDepth, surfW, 4 + Math.sin(wavePhase) * 1.5, 0, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
-        ctx.fill();
-
-        // Ghiaccio immerso
-        if (ice) {
-          ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
-          ctx.strokeStyle = 'rgba(255, 255, 255, 0.75)';
-          ctx.lineWidth = 1.5;
-
-          if (ice === 'cubes') {
-            for (let i = 0; i < 3; i++) {
-              const ix = centerX + (i - 1) * 20;
-              const iy = liquidTopY + 18 + i * 10;
-              if (iy < glassBotY - 12) {
-                ctx.save();
-                ctx.translate(ix, iy);
-                ctx.rotate((i * 35 * Math.PI) / 180);
-                ctx.rect(-11, -11, 22, 22);
-                ctx.fill();
-                ctx.stroke();
-                ctx.restore();
-              }
-            }
-          } else if (ice === 'sphere') {
-            ctx.beginPath();
-            ctx.arc(centerX, liquidTopY + 28, 22, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.stroke();
-          }
-        }
-
-        // Cannuccia (Immersa con rifrazione)
-        if (hasStraw) {
-          ctx.save();
-          ctx.strokeStyle = '#e11d48';
-          ctx.lineWidth = 4.5;
-          ctx.beginPath();
-          ctx.moveTo(centerX + 14, liquidTopY);
-          ctx.lineTo(centerX - 8, glassBotY - 10);
-          ctx.stroke();
-          ctx.restore();
-        }
-
-        ctx.restore();
-      }
-
-      // Cannuccia (Parte superiore fuori dal liquido)
-      if (hasStraw) {
-        ctx.save();
-        ctx.strokeStyle = '#e11d48';
-        ctx.lineWidth = 4.5;
-        const liquidTopY = totalVol > 0 ? glassBotY - (glassH * fillRatio) : glassBotY;
-        ctx.beginPath();
-        ctx.moveTo(centerX + 8, glassTopY - 22);
-        ctx.lineTo(centerX + (totalVol > 0 ? 14 : 8), liquidTopY);
-        ctx.moveTo(centerX + 8, glassTopY - 22);
-        ctx.lineTo(centerX + 26, glassTopY - 42);
-        ctx.stroke();
-        ctx.restore();
-      }
-
-      // Getto di versamento
-      if (pourColor) {
-        ctx.save();
-        ctx.fillStyle = pourColor;
-        ctx.beginPath();
-        const liquidTopY = totalVol > 0 ? glassBotY - (glassH * fillRatio) : glassBotY;
-        ctx.rect(centerX - 2.5, 0, 5, liquidTopY);
-        ctx.fill();
-        ctx.restore();
-      }
-
-      // Vetro Esterno e Riflessi
-      ctx.save();
-      if (stemH > 0) {
-        ctx.beginPath();
-        ctx.moveTo(centerX, glassBotY);
-        ctx.lineTo(centerX, bottomY);
-        ctx.lineWidth = 5.5;
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
-        ctx.stroke();
-
-        ctx.beginPath();
-        ctx.ellipse(centerX, bottomY, topW * 0.65, 6, 0, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.65)';
-        ctx.lineWidth = 2;
-        ctx.fill();
-        ctx.stroke();
-      }
-
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.75)';
-      ctx.lineWidth = 2.5;
-      ctx.stroke(glassPath);
-
-      // Condensa sul vetro con ghiaccio
-      if (ice && totalVol > 0) {
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
-        for (let i = 0; i < 16; i++) {
-          const cx = centerX - botW + ((i * 17) % (botW * 2));
-          const cy = glassBotY - ((i * 13) % (glassH * fillRatio));
-          ctx.beginPath();
-          ctx.arc(cx, cy, 1.2 + (i % 2), 0, Math.PI * 2);
-          ctx.fill();
-        }
-      }
-
-      ctx.restore();
-
-      // Bordo Salato/Zuccherato
-      if (salt) {
-        ctx.save();
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
-        for (let i = 0; i < 36; i++) {
-          const angle = (i / 36) * Math.PI * 2;
-          const sx = centerX + Math.cos(angle) * (topW + 1);
-          const sy = glassTopY + Math.sin(angle) * 3;
-          ctx.beginPath();
-          ctx.arc(sx, sy, 1.2, 0, Math.PI * 2);
-          ctx.fill();
-        }
-        ctx.restore();
-      }
-
-      // Guarnizioni
-      if (garnish && garnish !== 'Nessuno') {
-        ctx.save();
-        const gx = centerX + topW - 6;
-        const gy = glassTopY + 2;
-
-        if (garnish.includes('Lime') || garnish.includes('Arancia')) {
-          ctx.translate(gx, gy);
-          ctx.beginPath();
-          ctx.arc(0, 0, 18, 0, Math.PI * 2);
-          ctx.fillStyle = garnish.includes('Lime') ? '#84cc16' : '#f97316';
-          ctx.fill();
-          ctx.strokeStyle = '#ffffff';
-          ctx.lineWidth = 1.5;
-          ctx.stroke();
-        } else if (garnish === 'Menta') {
-          ctx.translate(gx - 8, gy - 8);
-          ctx.fillStyle = '#15803d';
-          ctx.beginPath();
-          ctx.ellipse(0, 0, 12, 6, -0.4, 0, Math.PI * 2);
-          ctx.fill();
-        } else if (garnish === 'Ciliegia') {
-          ctx.translate(gx, gy + 8);
-          ctx.beginPath();
-          ctx.arc(0, 0, 9, 0, Math.PI * 2);
-          ctx.fillStyle = '#be123c';
-          ctx.fill();
-        }
-        ctx.restore();
-      }
-
-      animFrameRef.current = requestAnimationFrame(render);
-    };
-
-    render();
-
-    return () => cancelAnimationFrame(animFrameRef.current);
-  }, [glassId, layers, ice, salt, garnish, pourColor, hasStraw, isMixed, isMixingAnim]);
-
-  return (
-    <canvas
-      ref={canvasRef}
-      style={{ width: 280, height: 340, display: 'block', margin: '0 auto' }}
-    />
-  );
-}
-
-// ── COMPONENTE PRINCIPALE ───────────────────────────────────────────────────
+// ── PAGE ──────────────────────────────────────────────────────────────────────
 
 export default function SimulatorPage() {
-  const { t } = useApp();
+  const params = useSearchParams();
+
   const [glassId, setGlassId] = useState<GlassId>('oldfashioned');
-  const [layers, setLayers] = useState<SimLayer[]>([]);
-  const [ice, setIce] = useState<IceType>(null);
-  const [garnish, setGarnish] = useState('Nessuno');
-  const [salt, setSalt] = useState(false);
-  const [pour, setPour] = useState<string | null>(null);
-  const [ingCat, setIngCat] = useState('Tutti');
-  const [search, setSearch] = useState('');
-  const [amounts, setAmounts] = useState<Record<number, number>>({});
+  const [parts,   setParts]   = useState<SimPart[]>([]);
+  const [water,   setWater]   = useState(0);
+  const [ice,     setIce]     = useState<IceKind>(null);
+  const [garnish, setGarnish] = useState('Nessuna');
+  const [rim,     setRim]     = useState<RimKind>(null);
+  const [straw,   setStraw]   = useState(false);
+  const [pour,    setPour]    = useState<string | null>(null);
+  const [mixing,  setMixing]  = useState<MixMethod | null>(null);
+  const [target,  setTarget]  = useState<Cocktail | null>(null);
+  const [toast,   setToast]   = useState<string | null>(null);
+  const [cat,     setCat]     = useState<string>('Tutti');
+  const [search,  setSearch]  = useState('');
+  const [undo,    setUndo]    = useState<Snapshot[]>([]);
+  const [autoPouring, setAutoPouring] = useState(false);
 
-  const [hasStraw, setHasStraw] = useState(false);
-  const [isMixed, setIsMixed] = useState(false);
-  const [isMixingAnim, setIsMixingAnim] = useState(false);
+  const gDef     = GLASSES[glassId];
+  const capacity = gDef.capacity;
+  const liquid   = parts.reduce((s, p) => s + p.amount, 0) + water;
+  const disp     = iceDisplacement(ice, capacity);
+  const free     = capacity - disp - liquid;
 
-  // Ref per tracciare il timer del versamento continuo
-  const pourIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  // Refs read by the pour loop
+  const freeRef = useRef(free);
+  freeRef.current = free;
+  const alive = useRef(true);
+  useEffect(() => () => { alive.current = false; }, []);
 
-  const gDef = GLASSES[glassId];
-  const stats = calcStats(layers, INGREDIENTS);
-  const match = matchCocktail(layers, COCKTAILS);
-
-  const filteredIngs = INGREDIENTS.filter(i =>
-    (ingCat === 'Tutti' || i.cat === ingCat) &&
-    (!search || i.name.toLowerCase().includes(search.toLowerCase()))
-  );
-
-  // Funzione per avviare il versamento continuo
-  const startPouring = (ing: typeof INGREDIENTS[0]) => {
-    setPour(ing.color);
-
-    const stepPour = () => {
-      setLayers(prev => {
-        const ex = prev.find(l => l.name === ing.name);
-        return ex
-          ? prev.map(l => l.name === ing.name ? { ...l, amount: l.amount + 1 } : l)
-          : [...prev, { name: ing.name, amount: 1, color: ing.color }];
-      });
-    };
-
-    // Primo versamento immediato
-    stepPour();
-
-    // Versamento continuo (1ml ogni 35ms)
-    if (pourIntervalRef.current) clearInterval(pourIntervalRef.current);
-    pourIntervalRef.current = setInterval(stepPour, 35);
-  };
-
-  // Funzione per fermare il versamento
-  const stopPouring = () => {
-    if (pourIntervalRef.current) {
-      clearInterval(pourIntervalRef.current);
-      pourIntervalRef.current = null;
-    }
-    setPour(null);
-  };
-
-  // Pulizia del timer al smontaggio del componente
-  useEffect(() => {
-    return () => {
-      if (pourIntervalRef.current) clearInterval(pourIntervalRef.current);
-    };
+  // ── Toast ──
+  const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const say = useCallback((msg: string) => {
+    setToast(msg);
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 2600);
   }, []);
 
-  // Aggiunta rapida della quantità specifica (singolo click sul pulsante +)
-  const addIngQuick = useCallback((ing: typeof INGREDIENTS[0]) => {
-    const amt = amounts[ing.id] ?? ing.ml;
-    setLayers(prev => {
-      const ex = prev.find(l => l.name === ing.name);
-      return ex
-        ? prev.map(l => l.name === ing.name ? { ...l, amount: l.amount + amt } : l)
-        : [...prev, { name: ing.name, amount: amt, color: ing.color }];
-    });
-    setPour(ing.color);
-    setTimeout(() => setPour(null), 600);
-  }, [amounts]);
+  // ── Undo ──
+  const snapshot = useCallback(() => {
+    setUndo(u => [...u.slice(-29), { parts, water }]);
+  }, [parts, water]);
 
-  const removeLayer = (name: string) => setLayers(prev => prev.filter(l => l.name !== name));
-  const adjustLayer = (name: string, delta: number) =>
-    setLayers(prev => prev.map(l => l.name === name ? { ...l, amount: Math.max(5, l.amount + delta) } : l));
-
-  const handleMix = () => {
-    if (layers.length === 0 || isMixingAnim) return;
-    setIsMixingAnim(true);
-    setTimeout(() => {
-      setIsMixed(true);
-      setIsMixingAnim(false);
-    }, 1200);
+  const doUndo = () => {
+    const last = undo[undo.length - 1];
+    if (!last) return;
+    setParts(last.parts); setWater(last.water); setUndo(u => u.slice(0, -1));
   };
 
   const reset = () => {
-    stopPouring();
-    setLayers([]);
-    setIce(null);
-    setSalt(false);
-    setGarnish('Nessuno');
-    setHasStraw(false);
-    setIsMixed(false);
+    stopPour();
+    snapshot();
+    setParts([]); setWater(0); setIce(null); setGarnish('Nessuna'); setRim(null); setStraw(false);
   };
 
-  const pct = Math.min(100, Math.round(
-    layers.reduce((s, l) => s + l.amount, 0) / (gDef.capacity * 0.88) * 100
-  ));
+  // ── Pouring: tap = default dose, hold = continuous ──
+  const press = useRef<{ ing: Ingredient; timer?: ReturnType<typeof setTimeout>; raf?: number; streaming: boolean } | null>(null);
+
+  function stopPour() {
+    const p = press.current;
+    if (p) { clearTimeout(p.timer); if (p.raf) cancelAnimationFrame(p.raf); }
+    press.current = null;
+    setPour(null);
+  }
+
+  const quickAdd = (ing: Ingredient) => {
+    const ml = Math.min(ing.ml, freeRef.current);
+    if (ml <= 0.5) { say('Il bicchiere è pieno'); return; }
+    snapshot();
+    setParts(p => addTo(p, ing, ml));
+    setPour(ing.color);
+    setTimeout(() => alive.current && setPour(c => (c === ing.color ? null : c)), 450);
+    if (ml < ing.ml) say(`Spazio finito: versati solo ${Math.round(ml)} ml`);
+  };
+
+  const onPressStart = (ing: Ingredient, e: React.PointerEvent) => {
+    if (autoPouring) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    stopPour();
+    const p: NonNullable<typeof press.current> = { ing, streaming: false };
+    press.current = p;
+    p.timer = setTimeout(() => {
+      if (freeRef.current <= 0.5) { say('Il bicchiere è pieno'); return; }
+      p.streaming = true;
+      snapshot();
+      setPour(ing.color);
+      let last = performance.now();
+      const tick = (now: number) => {
+        if (press.current !== p) return;
+        const ml = Math.min((POUR_RATE * (now - last)) / 1000, freeRef.current);
+        last = now;
+        if (ml <= 0) { say('Il bicchiere è pieno'); stopPour(); return; }
+        setParts(prev => addTo(prev, ing, ml));
+        p.raf = requestAnimationFrame(tick);
+      };
+      p.raf = requestAnimationFrame(tick);
+    }, HOLD_MS);
+  };
+
+  const onPressEnd = () => {
+    const p = press.current;
+    if (!p) return;
+    if (!p.streaming) { clearTimeout(p.timer); press.current = null; quickAdd(p.ing); }
+    else stopPour();
+  };
+
+  // ── Mixing ──
+  const mix = useCallback((method: MixMethod, silent = false) => {
+    const unmixed = parts.filter(p => !p.mixed);
+    if (!unmixed.length) { if (!silent) say(parts.length ? 'È già tutto miscelato' : 'Prima versa qualcosa'); return; }
+    if (method === 'shake' && unmixed.some(p => physics(p.name).fizzy) && !silent) {
+      say('Attenzione: shakerare le bollicine le fa sgasare');
+    }
+    snapshot();
+    setMixing(method);
+    setTimeout(() => {
+      if (!alive.current) return;
+      setMixing(null);
+      setParts(prev => {
+        const merged: SimPart[] = [];
+        for (const p of prev) {
+          const m = merged.find(x => x.name === p.name);
+          if (m) m.amount += p.amount; else merged.push({ ...p, mixed: true });
+        }
+        return merged;
+      });
+      // Melt-water only comes from ice: shaking always uses a tin full of it;
+      // stirring dilutes if there's ice in the glass, or if the drink is served
+      // "up" (coupe, martini…), i.e. stirred in a mixing glass and strained.
+      const servedUp = SHAPES[glassId].ice === 'none';
+      const dilutes = method === 'shake' || !!ice || servedUp;
+      const newly = unmixed.reduce((s, p) => s + p.amount, 0);
+      if (dilutes) setWater(w => w + Math.max(0, Math.min(newly * DILUTION[method], freeRef.current)));
+    }, 1300);
+  }, [parts, say, snapshot, glassId, ice]);
+
+  const removePart = (i: number) => { snapshot(); setParts(p => p.filter((_, j) => j !== i)); };
+  const adjustPart = (i: number, d: number) => {
+    if (d > 0 && free < d) { say('Non c’è più spazio'); return; }
+    snapshot();
+    setParts(p => p.map((x, j) => (j === i ? { ...x, amount: Math.max(1, x.amount + d) } : x)));
+  };
+
+  const changeGlass = (id: GlassId) => {
+    setGlassId(id);
+    const over = liquid + iceDisplacement(ice, GLASSES[id].capacity) - GLASSES[id].capacity;
+    if (over > 1) say(`Attenzione: ${Math.round(over)} ml non ci stanno in questo bicchiere`);
+  };
+
+  const changeIce = (k: IceKind) => {
+    setIce(k);
+    const over = liquid + iceDisplacement(k, capacity) - capacity;
+    if (over > 1) say('Con questo ghiaccio il drink trabocca');
+  };
+
+  // ── Guided mode ──
+  const loadTarget = useCallback((c: Cocktail | null) => {
+    setTarget(c);
+    if (!c) return;
+    setGlassId(c.glass);
+    const a = artLayers(c);
+    setIce(a.ice);
+    setRim(a.rim);
+  }, []);
+
+  useEffect(() => {
+    const slug = params.get('c');
+    const c = slug ? getCocktailBySlug(slug) : null;
+    if (c) loadTarget(c);
+  }, [params, loadTarget]);
+
+  const autoPour = async () => {
+    if (!target || autoPouring) return;
+    setAutoPouring(true);
+    stopPour();
+    snapshot();
+    setParts([]); setWater(0);
+    const wait = (ms: number) => new Promise(r => setTimeout(r, ms));
+    await wait(200);
+    for (const ing of target.ings) {
+      if (!alive.current) return;
+      const color = ing.color;
+      setPour(color);
+      const steps = 8;
+      for (let s = 0; s < steps; s++) {
+        setParts(p => addTo(p, { name: canon(ing.name), color }, ing.amount / steps));
+        await wait(55);
+      }
+      setPour(null);
+      await wait(160);
+    }
+    const tech = techniqueOf(target);
+    setGarnish(garnishFor(target.garnish));
+    setAutoPouring(false);
+    if (tech === 'shake' || tech === 'stir') say(tech === 'shake' ? 'Ora shakeralo!' : 'Ora mescolalo!');
+  };
+
+  // ── Derived render data ──
+  const layers: GlassLayer[] = useMemo(() => {
+    const mixed = parts.filter(p => p.mixed);
+    const blocks: (GlassLayer & { d: number })[] = [];
+    if (mixed.length || water > 0) {
+      const all = [...mixed, ...(water > 0 ? [{ name: 'Acqua', amount: water, color: WATER }] : [])];
+      const vol = all.reduce((s, p) => s + p.amount, 0);
+      blocks.push({
+        color: blendColors(all),
+        amount: vol,
+        d: all.reduce((s, p) => s + physics(p.name).density * p.amount, 0) / (vol || 1),
+      });
+    }
+    for (const p of parts.filter(x => !x.mixed)) blocks.push({ color: p.color, amount: p.amount, d: physics(p.name).density });
+    return blocks.sort((a, b) => b.d - a.d).map(({ color, amount }) => ({ color, amount }));
+  }, [parts, water]);
+
+  const fizzy   = parts.some(p => physics(p.name).fizzy);
+  const stats   = drinkStats(parts, water);
+  const matches = useMemo(() => matchRecipes(parts), [parts]);
+  const best    = matches[0];
+  const fillPct = Math.min(100, Math.round(((liquid + (liquid > 0 ? disp : 0)) / capacity) * 100));
+
+  const ingredients = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return INGREDIENTS.filter(i => (cat === 'Tutti' || i.cat === cat) && (!q || i.name.toLowerCase().includes(q)));
+  }, [cat, search]);
+
+  const targetRows = target?.ings.map(i => {
+    const name = canon(i.name);
+    const poured = parts.filter(p => canon(p.name) === name).reduce((s, p) => s + p.amount, 0);
+    const ok = Math.abs(poured - i.amount) <= Math.max(2, i.amount * 0.15);
+    return { name, poured, want: i.amount, color: i.color, ok, over: poured > i.amount * 1.15 + 2 };
+  }) ?? [];
+  const targetDone = targetRows.length > 0 && targetRows.every(r => r.ok);
+  const sortedCocktails = useMemo(() => [...COCKTAILS].sort((a, b) => a.name.localeCompare(b.name, 'it')), []);
 
   return (
-    <div style={{ maxWidth: 1300, margin: '0 auto', padding: '90px 20px 40px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 32, flexWrap: 'wrap', gap: 12 }}>
+    <div className="wrap pb-10 pt-8">
+      <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 style={{ fontFamily: 'Cormorant Garamond, serif', fontSize: 40, color: t.text, marginBottom: 4 }}>🧪 Laboratory</h1>
-          <p style={{ fontFamily: 'Raleway, sans-serif', fontSize: 14, color: t.textMuted }}>Costruisci il tuo cocktail ingrediente per ingrediente</p>
+          <div className="eyebrow">Laboratorio</div>
+          <h1 className="mt-2 font-display text-5xl sm:text-6xl">Crea il tuo drink</h1>
         </div>
-        <button onClick={reset} style={{ background: 'none', border: `1px solid ${t.border}`, color: t.textMuted, cursor: 'pointer', borderRadius: 8, padding: '8px 18px', fontFamily: 'Raleway, sans-serif', fontSize: 13 }}>↺ Reset</button>
-      </div>
-
-      {match && layers.length > 0 && (
-        <div style={{ background: `linear-gradient(135deg,rgba(${t.goldRgb},0.15),rgba(${t.goldRgb},0.06))`, border: `1px solid rgba(${t.goldRgb},0.35)`, borderRadius: 12, padding: '14px 20px', marginBottom: 24, display: 'flex', alignItems: 'center', gap: 12 }}>
-          <span style={{ fontSize: 24 }}>✨</span>
-          <div>
-            <div style={{ fontFamily: 'Cormorant Garamond, serif', fontSize: 20, color: t.gold, fontWeight: 600 }}>Stai preparando un {match.name}!</div>
-            <div style={{ fontFamily: 'Raleway, sans-serif', fontSize: 13, color: t.textMuted }}>{match.desc}</div>
-          </div>
+        <div className="flex gap-2">
+          <button onClick={doUndo} disabled={!undo.length || autoPouring} className="btn-ghost"><Icon name="undo" size={16} /> Annulla</button>
+          <button onClick={reset} disabled={autoPouring} className="btn-ghost"><Icon name="reset" size={16} /> Svuota</button>
         </div>
-      )}
+      </header>
 
-      <div className="sim-grid" style={{ display: 'grid', gridTemplateColumns: '260px 1fr 220px', gap: 20, alignItems: 'start' }}>
-        <div>
-          <div style={{ background: t.card, border: `1px solid ${t.border}`, borderRadius: 12, padding: 16, marginBottom: 16 }}>
-            <div style={{ fontSize: 11, letterSpacing: '0.15em', color: t.gold, fontFamily: 'Raleway, sans-serif', textTransform: 'uppercase', fontWeight: 600, marginBottom: 12 }}>Bicchiere</div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-              {(Object.values(GLASSES)).map(g => (
-                <button key={g.id} onClick={() => { setGlassId(g.id); reset(); }}
-                  style={{ background: glassId === g.id ? t.goldSoft : 'none', border: `1px solid ${glassId === g.id ? t.gold : t.border}`, borderRadius: 8, padding: '8px 6px', cursor: 'pointer', color: glassId === g.id ? t.gold : t.textMuted, fontFamily: 'Raleway, sans-serif', fontSize: 11, fontWeight: 500, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, transition: 'all 0.2s' }}>
-                  <span style={{ fontSize: 18 }}>{g.emoji}</span>
-                  <span>{g.name}</span>
+      <div className="mt-8 grid gap-5 lg:grid-cols-[300px_minmax(0,1fr)_330px]">
+        {/* ── STAGE ─────────────────────────────────────────────────── */}
+        <section className="order-1 min-w-0 lg:order-2">
+          <div className="card relative overflow-hidden">
+            <div className="pointer-events-none absolute inset-0"
+              style={{ background: `radial-gradient(60% 50% at 50% 62%, ${layers.length ? blendColors(layers) : 'rgba(255,255,255,.04)'}, transparent 70%)`, opacity: 0.35 }} />
+            <div className="absolute inset-x-0 bottom-0 h-[22%] bg-gradient-to-b from-black/0 to-black/30" />
+
+            <div className="relative flex items-start justify-between p-4 sm:p-5">
+              <div>
+                <div className="font-display text-xl">{gDef.name}</div>
+                <div className="text-xs text-muted">{capacity} ml</div>
+              </div>
+              <div className="text-right">
+                <div className="font-display text-xl tabular-nums">{Math.round(liquid)} <span className="text-sm text-muted">ml</span></div>
+                <div className={`text-xs ${fillPct >= 98 ? 'text-accent-2' : 'text-muted'}`}>{fillPct}% pieno</div>
+              </div>
+            </div>
+
+            {toast && (
+              <div className="absolute left-1/2 top-16 z-10 -translate-x-1/2 whitespace-nowrap rounded-full bg-text px-4 py-2 text-sm font-medium text-bg shadow-lg" style={{ animation: 'toast-in .25s ease both' }}>
+                {toast}
+              </div>
+            )}
+
+            <div className="relative flex h-[280px] items-end justify-center sm:h-[460px]">
+              <Glass
+                glass={glassId} layers={layers} capacity={capacity}
+                ice={ice} garnish={garnish === 'Nessuna' ? null : garnish} rim={rim} straw={straw}
+                fizzy={fizzy} pour={pour} mixing={mixing}
+                className="h-full w-full max-w-[420px] pb-4"
+                title={best && best.score > 0.75 ? best.cocktail.name : 'Il tuo drink'}
+              />
+              {/* Fill meter */}
+              <div className="absolute bottom-8 right-5 top-4 w-1.5 overflow-hidden rounded-full bg-line/10" aria-hidden>
+                <div className="absolute inset-x-0 bottom-0 rounded-full bg-accent transition-[height] duration-200" style={{ height: `${fillPct}%` }} />
+              </div>
+            </div>
+
+            {/* Tools */}
+            <div className="relative grid gap-3 border-t border-line/[0.07] bg-bg/40 p-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <button onClick={() => mix('stir')} disabled={!!mixing || autoPouring} className="btn-primary px-4 py-2">
+                  <Icon name="stir" size={16} /> {mixing === 'stir' ? 'Mescolo…' : 'Mescola'}
                 </button>
-              ))}
-            </div>
-          </div>
-
-          <div style={{ background: t.card, border: `1px solid ${t.border}`, borderRadius: 12, padding: 16 }}>
-            <div style={{ fontSize: 11, letterSpacing: '0.15em', color: t.gold, fontFamily: 'Raleway, sans-serif', textTransform: 'uppercase', fontWeight: 600, marginBottom: 10 }}>Ingredienti</div>
-            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Cerca..."
-              style={{ width: '100%', background: t.input, border: `1px solid ${t.inpBdr}`, borderRadius: 6, padding: '7px 10px', color: t.text, fontFamily: 'Raleway, sans-serif', fontSize: 13, outline: 'none', marginBottom: 10, boxSizing: 'border-box' }} />
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 10 }}>
-              {['Tutti', 'Gin', 'Vodka', 'Rum', 'Whisky', 'Tequila', 'Bitter', 'Liquori', 'Succhi', 'Soft Drinks'].map(c => (
-                <button key={c} onClick={() => setIngCat(c)}
-                  style={{ background: ingCat === c ? t.goldSoft : 'none', border: `1px solid ${ingCat === c ? t.gold : t.border}`, borderRadius: 20, padding: '2px 8px', cursor: 'pointer', color: ingCat === c ? t.gold : t.textSub, fontFamily: 'Raleway, sans-serif', fontSize: 10, fontWeight: 500 }}>
-                  {c}
+                <button onClick={() => mix('shake')} disabled={!!mixing || autoPouring} className="btn-ghost px-4 py-2">
+                  <Icon name="shake" size={16} /> {mixing === 'shake' ? 'Shakero…' : 'Shakera'}
                 </button>
-              ))}
-            </div>
-            <div style={{ maxHeight: 340, overflowY: 'auto' }}>
-              {filteredIngs.map(ing => (
-                <div key={ing.id} className="ing-row" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 4px', borderBottom: `1px solid ${t.border}`, borderRadius: 4 }}>
-                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: ing.color, border: '1px solid rgba(255,255,255,0.3)', flexShrink: 0 }} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontFamily: 'Raleway, sans-serif', fontSize: 12, color: t.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ing.name}</div>
-                    {ing.abv > 0 && <div style={{ fontFamily: 'Raleway, sans-serif', fontSize: 10, color: t.textSub }}>{ing.abv}% vol</div>}
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <input type="number" value={amounts[ing.id] ?? ing.ml} min={5} max={250} step={5}
-                      onChange={e => setAmounts(prev => ({ ...prev, [ing.id]: +e.target.value }))}
-                      style={{ width: 34, background: t.input, border: `1px solid ${t.inpBdr}`, borderRadius: 4, padding: '2px 3px', color: t.gold, fontFamily: 'Raleway, sans-serif', fontSize: 11, textAlign: 'center', outline: 'none' }} />
-                    
-                    {/* Pulsante per aggiunta rapida (click) */}
-                    <button onClick={() => addIngQuick(ing)} title="Aggiungi quantità impostata" style={{ background: t.goldSoft, border: `1px solid ${t.gold}`, borderRadius: 4, padding: '3px 6px', cursor: 'pointer', color: t.gold, fontSize: 13, lineHeight: 1, fontWeight: 600, flexShrink: 0 }}>+</button>
-
-                    {/* Pulsante per Versamento Continuo (Pressione prolungata su Mobile / Mouse) */}
-                    <button
-                      onPointerDown={(e) => {
-                        e.preventDefault();
-                        startPouring(ing);
-                      }}
-                      onPointerUp={stopPouring}
-                      onPointerLeave={stopPouring}
-                      onPointerCancel={stopPouring}
-                      title="Tieni premuto per versare a flusso continuo"
-                      style={{
-                        background: t.goldSoft,
-                        border: `1px solid ${t.gold}`,
-                        borderRadius: 4,
-                        padding: '3px 6px',
-                        cursor: 'pointer',
-                        color: t.gold,
-                        fontSize: 11,
-                        lineHeight: 1,
-                        fontWeight: 600,
-                        flexShrink: 0,
-                        touchAction: 'none',
-                        userSelect: 'none',
-                        WebkitUserSelect: 'none',
-                      }}
-                    >
-                      🧪
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
-          <GlassCanvas
-            glassId={glassId}
-            layers={layers}
-            ice={ice}
-            salt={salt}
-            garnish={garnish}
-            pourColor={pour}
-            hasStraw={hasStraw}
-            isMixed={isMixed}
-            isMixingAnim={isMixingAnim}
-          />
-
-          <div style={{ display: 'flex', gap: 10, width: '100%', maxWidth: 280 }}>
-            <button
-              onClick={handleMix}
-              disabled={layers.length < 2 || isMixed || isMixingAnim}
-              style={{
-                flex: 1,
-                padding: '8px 12px',
-                background: isMixed ? t.goldSoft : t.card,
-                border: `1px solid ${t.gold}`,
-                borderRadius: 8,
-                color: t.gold,
-                fontSize: 12,
-                fontWeight: 600,
-                cursor: layers.length < 2 || isMixed ? 'not-allowed' : 'pointer',
-                opacity: layers.length < 2 ? 0.5 : 1,
-              }}
-            >
-              {isMixingAnim ? 'Mescolando...' : isMixed ? '✓ Miscelato' : '🥄 Mischia'}
-            </button>
-
-            <button
-              onClick={() => setHasStraw(prev => !prev)}
-              style={{
-                flex: 1,
-                padding: '8px 12px',
-                background: hasStraw ? t.goldSoft : t.card,
-                border: `1px solid ${hasStraw ? t.gold : t.border}`,
-                borderRadius: 8,
-                color: hasStraw ? t.gold : t.textMuted,
-                fontSize: 12,
-                fontWeight: 600,
-                cursor: 'pointer',
-              }}
-            >
-              🥤 {hasStraw ? 'Togli Cannuccia' : 'Cannuccia'}
-            </button>
-          </div>
-
-          <div style={{ width: 280 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-              <span style={{ fontFamily: 'Raleway, sans-serif', fontSize: 11, color: t.textSub }}>Capienza</span>
-              <span style={{ fontFamily: 'Raleway, sans-serif', fontSize: 11, color: t.gold, fontWeight: 600 }}>{pct}%</span>
-            </div>
-            <div style={{ height: 4, background: `rgba(${t.goldRgb},0.12)`, borderRadius: 2, overflow: 'hidden' }}>
-              <div style={{ height: '100%', width: `${pct}%`, background: `linear-gradient(90deg,${t.copper},${t.gold})`, borderRadius: 2, transition: 'width 0.4s ease' }} />
+                <span className="mx-1 hidden h-6 w-px bg-line/10 sm:block" />
+                <button onClick={() => setStraw(s => !s)} data-active={straw} className="chip"><Icon name="straw" size={14} /> Cannuccia</button>
+                <button onClick={() => setRim(r => (r === 'salt' ? null : 'salt'))} data-active={rim === 'salt'} className="chip">Bordo sale</button>
+                <button onClick={() => setRim(r => (r === 'sugar' ? null : 'sugar'))} data-active={rim === 'sugar'} className="chip">Bordo zucchero</button>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="stat-label w-16">Ghiaccio</span>
+                {ICE_OPTIONS.map(o => (
+                  <button key={String(o.id)} onClick={() => changeIce(o.id)} data-active={ice === o.id} className="chip px-3 py-1">{o.label}</button>
+                ))}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="stat-label w-16">Garnish</span>
+                <select value={garnish} onChange={e => setGarnish(e.target.value)} className="input w-auto cursor-pointer rounded-full py-1.5 text-sm">
+                  {GARNISHES.map(g => <option key={g}>{g}</option>)}
+                </select>
+              </div>
             </div>
           </div>
 
-          {layers.length > 0 && (
-            <div style={{ width: '100%', maxWidth: 300 }}>
-              <div style={{ fontSize: 11, letterSpacing: '0.15em', color: t.gold, fontFamily: 'Raleway, sans-serif', textTransform: 'uppercase', fontWeight: 600, marginBottom: 10, textAlign: 'center' }}>Composizione</div>
-              {layers.map((l, i) => (
-                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', background: t.card, border: `1px solid ${t.border}`, borderRadius: 8, marginBottom: 6 }}>
-                  <span style={{ width: 10, height: 10, borderRadius: '50%', background: l.color, border: '1px solid rgba(255,255,255,0.3)', flexShrink: 0 }} />
-                  <span style={{ flex: 1, fontFamily: 'Raleway, sans-serif', fontSize: 13, color: t.text }}>{l.name}</span>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <button onClick={() => adjustLayer(l.name, -5)} style={{ background: t.input, border: `1px solid ${t.border}`, borderRadius: 3, width: 20, height: 20, cursor: 'pointer', color: t.textMuted, fontSize: 14, lineHeight: 1 }}>−</button>
-                    <span style={{ fontFamily: 'Raleway, sans-serif', fontSize: 12, color: t.gold, minWidth: 36, textAlign: 'center', fontWeight: 600 }}>{l.amount}ml</span>
-                    <button onClick={() => adjustLayer(l.name, 5)} style={{ background: t.input, border: `1px solid ${t.border}`, borderRadius: 3, width: 20, height: 20, cursor: 'pointer', color: t.textMuted, fontSize: 14, lineHeight: 1 }}>+</button>
-                    <button onClick={() => removeLayer(l.name)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: t.textSub, fontSize: 14, marginLeft: 2, padding: 0, lineHeight: 1 }}>✕</button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <div style={{ background: t.card, border: `1px solid ${t.border}`, borderRadius: 12, padding: 16 }}>
-            <div style={{ fontSize: 11, letterSpacing: '0.15em', color: t.gold, fontFamily: 'Raleway, sans-serif', textTransform: 'uppercase', fontWeight: 600, marginBottom: 12 }}>Ghiaccio</div>
-            {ICE_OPTIONS.map(i => (
-              <button key={String(i.id)} onClick={() => setIce(i.id)}
-                style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', background: ice === i.id ? t.goldSoft : 'none', border: `1px solid ${ice === i.id ? t.gold : t.border}`, borderRadius: 7, padding: '7px 10px', cursor: 'pointer', marginBottom: 5, color: ice === i.id ? t.gold : t.textMuted, fontFamily: 'Raleway, sans-serif', fontSize: 13, fontWeight: ice === i.id ? 600 : 400, transition: 'all 0.2s' }}>
-                <span style={{ fontSize: 16 }}>{i.emoji}</span> {i.label}
+          {/* Glass picker */}
+          <div className="no-scrollbar mt-3 flex gap-2 overflow-x-auto pb-1">
+            {GLASS_ORDER.map(id => (
+              <button key={id} onClick={() => changeGlass(id)} aria-pressed={glassId === id}
+                className={`flex w-[76px] shrink-0 flex-col items-center rounded-2xl border px-1 pb-2 pt-1 transition-colors ${glassId === id ? 'border-accent/60 bg-accent/10 text-accent' : 'border-line/[0.07] text-muted hover:border-line/20 hover:text-text'}`}>
+                <Glass glass={id} layers={[]} capacity={GLASSES[id].capacity} className="h-14 w-14" title={GLASSES[id].name} />
+                <span className="w-full truncate text-center text-[11px]">{GLASSES[id].name.replace('Coppa ', '').replace('Calice ', '')}</span>
               </button>
             ))}
           </div>
+        </section>
 
-          <div style={{ background: t.card, border: `1px solid ${t.border}`, borderRadius: 12, padding: 16 }}>
-            <div style={{ fontSize: 11, letterSpacing: '0.15em', color: t.gold, fontFamily: 'Raleway, sans-serif', textTransform: 'uppercase', fontWeight: 600, marginBottom: 12 }}>Guarnizione</div>
-            <select value={garnish} onChange={e => setGarnish(e.target.value)}
-              style={{ width: '100%', background: t.input, border: `1px solid ${t.inpBdr}`, borderRadius: 6, padding: '8px 10px', color: t.text, fontFamily: 'Raleway, sans-serif', fontSize: 13, outline: 'none', cursor: 'pointer' }}>
-              {GARNISH_OPTIONS.map(g => <option key={g} value={g} style={{ background: '#1a1025' }}>{g}</option>)}
-            </select>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginTop: 10 }}>
-              <input type="checkbox" checked={salt} onChange={e => setSalt(e.target.checked)} style={{ accentColor: t.gold }} />
-              <span style={{ fontFamily: 'Raleway, sans-serif', fontSize: 13, color: t.textMuted }}>Bordo Salato / Zuccherato</span>
+        {/* ── INGREDIENTS ──────────────────────────────────────────── */}
+        <aside className="order-2 min-w-0 lg:order-1">
+          <div className="card flex flex-col p-4 lg:sticky lg:top-24 lg:max-h-[calc(100vh-7rem)]">
+            <h2 className="font-display text-2xl">Bottigliera</h2>
+            <p className="mt-1 text-xs text-muted">Tocca per la dose standard · tieni premuto per versare</p>
+            <label className="relative mt-3">
+              <Icon name="search" size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Cerca…" className="input rounded-full py-2 pl-9 text-sm" />
             </label>
+            <div className="no-scrollbar -mx-1 mt-3 flex gap-1.5 overflow-x-auto px-1 pb-1">
+              {INGREDIENT_CATEGORIES.map(c => (
+                <button key={c} onClick={() => setCat(c)} data-active={cat === c} className="chip px-3 py-1 text-xs">{c}</button>
+              ))}
+            </div>
+            <ul className="-mx-2 mt-2 max-h-[360px] overflow-y-auto lg:max-h-none lg:flex-1">
+              {ingredients.map(ing => (
+                <li key={ing.id}>
+                  <button
+                    onPointerDown={e => onPressStart(ing, e)}
+                    onPointerUp={onPressEnd}
+                    onPointerCancel={stopPour}
+                    onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); quickAdd(ing); } }}
+                    onContextMenu={e => e.preventDefault()}
+                    disabled={autoPouring}
+                    className="flex w-full touch-none select-none items-center gap-3 rounded-xl px-2 py-2 text-left transition-colors hover:bg-line/5 active:bg-accent/10"
+                  >
+                    <span className="h-7 w-3 shrink-0 rounded-full ring-1 ring-white/15" style={{ background: ing.color }} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm">{ing.name}</span>
+                      <span className="block text-[11px] text-muted">{ing.abv > 0 ? `${ing.abv}% vol` : 'analcolico'}</span>
+                    </span>
+                    <span className="rounded-full border border-line/10 px-2 py-0.5 text-[11px] tabular-nums text-muted">+{ing.ml}</span>
+                  </button>
+                </li>
+              ))}
+              {!ingredients.length && <li className="px-2 py-6 text-center text-sm text-muted">Nessun ingrediente</li>}
+            </ul>
           </div>
+        </aside>
 
-          <div style={{ background: t.card, border: `1px solid ${t.border}`, borderRadius: 12, padding: 16 }}>
-            <div style={{ fontSize: 11, letterSpacing: '0.15em', color: t.gold, fontFamily: 'Raleway, sans-serif', textTransform: 'uppercase', fontWeight: 600, marginBottom: 14 }}>Statistiche</div>
+        {/* ── INFO ─────────────────────────────────────────────────── */}
+        <aside className="order-3 grid min-w-0 content-start gap-4">
+          {/* Stats */}
+          <div className="card grid grid-cols-2 gap-px overflow-hidden bg-line/[0.07] p-0">
             {([
-              ['Volume', `${stats.vol} ml / ${gDef.capacity} ml`],
-              ['ABV', `${stats.abv}%`],
-              ['Calorie', `~${stats.cal} kcal`],
-              ['Bicchiere', gDef.name],
-            ] as [string, string][]).map(([k, v]) => (
-              <div key={k} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: `1px solid ${t.border}` }}>
-                <span style={{ fontFamily: 'Raleway, sans-serif', fontSize: 12, color: t.textMuted }}>{k}</span>
-                <span style={{ fontFamily: 'Cormorant Garamond, serif', fontSize: 15, color: t.gold, fontWeight: 600 }}>{v}</span>
+              ['Gradazione', `${stats.abv}%`],
+              ['Calorie', `${stats.kcal}`],
+              ['Alcol', `${stats.alcohol} g`],
+              ['Diluizione', `${stats.water} ml`],
+            ] as const).map(([k, v]) => (
+              <div key={k} className="bg-surface p-4">
+                <div className="stat-label">{k}</div>
+                <div className="stat-value mt-1 tabular-nums">{v}</div>
               </div>
             ))}
           </div>
-        </div>
+
+          {/* Recognition */}
+          {parts.length > 0 && (
+            <div className="card p-4">
+              {best && best.score >= 0.62 ? (
+                <>
+                  <div className="flex items-center justify-between">
+                    <span className="eyebrow">Riconosciuto</span>
+                    <span className="text-sm font-semibold tabular-nums text-accent">{Math.round(best.score * 100)}%</span>
+                  </div>
+                  <Link href={cocktailHref(best.cocktail)} className="mt-1 block font-display text-3xl hover:text-accent">{best.cocktail.name}</Link>
+                  {best.missing.length > 0 && <p className="mt-1 text-sm text-muted">Manca: {best.missing.join(', ')}</p>}
+                  {best.extra.length > 0 && <p className="mt-0.5 text-sm text-muted">In più: {best.extra.join(', ')}</p>}
+                </>
+              ) : (
+                <>
+                  <span className="eyebrow">Creazione originale</span>
+                  <p className="mt-1 text-sm text-muted">{matches.length ? 'Si avvicina a:' : 'Nessuna ricetta simile nel ricettario.'}</p>
+                </>
+              )}
+              {matches.slice(best && best.score >= 0.62 ? 1 : 0).length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {matches.slice(best && best.score >= 0.62 ? 1 : 0).map(m => (
+                    <Link key={m.cocktail.id} href={cocktailHref(m.cocktail)} className="chip text-xs">
+                      {m.cocktail.name} <span className="opacity-60">{Math.round(m.score * 100)}%</span>
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Composition */}
+          <div className="card p-4">
+            <h2 className="font-display text-2xl">Nel bicchiere</h2>
+            {parts.length === 0 && water === 0 ? (
+              <p className="mt-2 text-sm text-muted">Ancora vuoto. Scegli un ingrediente dalla bottigliera.</p>
+            ) : (
+              <ul className="mt-3 grid gap-1.5">
+                {parts.map((p, i) => (
+                  <li key={`${p.name}-${p.mixed}`} className="flex items-center gap-2.5 rounded-xl bg-bg/40 py-1.5 pl-3 pr-1.5">
+                    <span className="h-3 w-3 shrink-0 rounded-full ring-1 ring-white/20" style={{ background: p.color }} />
+                    <span className="min-w-0 flex-1 truncate text-sm">{p.name}{p.mixed && <span className="ml-1.5 text-[10px] uppercase tracking-wider text-muted">mix</span>}</span>
+                    <button onClick={() => adjustPart(i, -5)} className="btn-icon h-7 w-7" aria-label="Meno 5 ml"><Icon name="minus" size={13} /></button>
+                    <span className="w-12 text-center text-sm tabular-nums">{Math.round(p.amount)} ml</span>
+                    <button onClick={() => adjustPart(i, 5)} className="btn-icon h-7 w-7" aria-label="Più 5 ml"><Icon name="plus" size={13} /></button>
+                    <button onClick={() => removePart(i)} className="btn-icon h-7 w-7 border-transparent" aria-label={`Rimuovi ${p.name}`}><Icon name="close" size={13} /></button>
+                  </li>
+                ))}
+                {water > 0 && (
+                  <li className="flex items-center gap-2.5 px-3 py-1 text-sm text-muted">
+                    <span className="h-3 w-3 rounded-full ring-1 ring-white/20" style={{ background: WATER }} />
+                    <span className="flex-1">Acqua di diluizione</span>
+                    <span className="tabular-nums">{Math.round(water)} ml</span>
+                  </li>
+                )}
+              </ul>
+            )}
+          </div>
+
+          {/* Guided mode */}
+          <div className="card p-4">
+            <h2 className="font-display text-2xl">Segui una ricetta</h2>
+            <select value={target?.id ?? ''} onChange={e => loadTarget(COCKTAILS.find(c => c.id === +e.target.value) ?? null)}
+              className="input mt-3 cursor-pointer text-sm">
+              <option value="">Scegli un cocktail…</option>
+              {sortedCocktails.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+            {target && (
+              <>
+                <ul className="mt-3 grid gap-2">
+                  {targetRows.map(r => (
+                    <li key={r.name}>
+                      <div className="flex items-center justify-between text-sm">
+                        <span className={r.ok ? 'text-accent' : ''}>{r.ok && <Icon name="check" size={13} className="mr-1 inline" />}{r.name}</span>
+                        <span className={`tabular-nums ${r.over ? 'text-accent-2' : 'text-muted'}`}>{Math.round(r.poured)} / {r.want} ml</span>
+                      </div>
+                      <div className="mt-1 h-1 overflow-hidden rounded-full bg-line/10">
+                        <div className="h-full rounded-full transition-[width] duration-200" style={{ width: `${Math.min(100, (r.poured / r.want) * 100)}%`, background: r.over ? 'rgb(var(--accent-2))' : 'rgb(var(--accent))' }} />
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-3 text-xs text-muted">
+                  {targetDone ? 'Dosi perfette. ' : ''}Tecnica: {{ shake: 'shakera', stir: 'mescola', build: 'costruisci nel bicchiere', blend: 'frulla con ghiaccio' }[techniqueOf(target)]} · {target.garnish}
+                </p>
+                <div className="mt-3 flex gap-2">
+                  <button onClick={autoPour} disabled={autoPouring} className="btn-ghost flex-1 py-2 text-sm">
+                    {autoPouring ? 'Verso…' : 'Versa per me'}
+                  </button>
+                  <Link href={cocktailHref(target)} className="btn-quiet py-2 text-sm">Ricetta</Link>
+                </div>
+              </>
+            )}
+          </div>
+        </aside>
       </div>
     </div>
   );
