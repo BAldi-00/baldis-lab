@@ -311,11 +311,41 @@ export const INGREDIENTS: Ingredient[] = [
   {id:28, name:"Acqua Tonica",   cat:"Soft Drinks", color:"rgba(218,238,255,0.5)",abv:0,    ml:100},
   {id:29, name:"Espresso",       cat:"Altro",       color:"#100500",              abv:0,    ml:30},
   {id:30, name:"Panna",          cat:"Altro",       color:"rgba(255,250,245,0.85)",abv:0,   ml:30},
+  // Ingredients used by the recipes that the simulator/cabinet were missing
+  {id:31, name:"Cognac",         cat:"Brandy",      color:"#B8682A",              abv:40,   ml:40},
+  {id:32, name:"Pisco",          cat:"Brandy",      color:"rgba(255,250,230,0.5)",abv:40,   ml:50},
+  {id:33, name:"Cachaça",        cat:"Rum",         color:"rgba(255,248,225,0.5)",abv:40,   ml:50},
+  {id:34, name:"Vino Rosso",     cat:"Vino",        color:"#6E0F1F",              abv:13,   ml:60},
+  {id:35, name:"Suze",           cat:"Bitter",      color:"#E8D23A",              abv:15,   ml:30},
+  {id:36, name:"Maraschino",     cat:"Liquori",     color:"rgba(250,250,240,0.55)",abv:32,  ml:10},
+  {id:37, name:"Blue Curaçao",   cat:"Liquori",     color:"#1E7FD6",              abv:25,   ml:20},
+  {id:38, name:"Cassis",         cat:"Liquori",     color:"#4A0030",              abv:16,   ml:15},
+  {id:39, name:"Galliano",       cat:"Liquori",     color:"#F2C318",              abv:42,   ml:15},
+  {id:40, name:"Chartreuse",     cat:"Liquori",     color:"#7FB92F",              abv:55,   ml:20},
+  {id:41, name:"Violette",       cat:"Liquori",     color:"#7A5BA8",              abv:20,   ml:10},
+  {id:42, name:"Cherry Brandy",  cat:"Liquori",     color:"#7A0E1E",              abv:24,   ml:15},
+  {id:43, name:"Passoa",         cat:"Liquori",     color:"#FF4500",              abv:17,   ml:20},
+  {id:44, name:"Pompelmo",       cat:"Succhi",      color:"#FFA8A0",              abv:0,    ml:30},
+  {id:45, name:"Passion Fruit",  cat:"Succhi",      color:"#FF9A1F",              abv:0,    ml:30},
+  {id:46, name:"Purea Pesca",    cat:"Succhi",      color:"#FFC08A",              abv:0,    ml:30},
+  {id:47, name:"Granatina",      cat:"Sciroppi",    color:"#9B0A1A",              abv:0,    ml:15},
+  {id:48, name:"Sciroppo Lampone",cat:"Sciroppi",   color:"#C2185B",              abv:0,    ml:15},
+  {id:49, name:"Sciroppo Miele", cat:"Sciroppi",    color:"#E0A526",              abv:0,    ml:15},
+  {id:50, name:"Sciroppo Sambuco",cat:"Sciroppi",   color:"rgba(250,245,210,0.7)",abv:0,    ml:15},
+  {id:51, name:"Ginger Beer",    cat:"Soft Drinks", color:"rgba(240,215,150,0.6)",abv:0,    ml:100},
+  {id:52, name:"Cola",           cat:"Soft Drinks", color:"#3A1606",              abv:0,    ml:100},
+  {id:53, name:"Limonata",       cat:"Soft Drinks", color:"rgba(250,245,190,0.6)",abv:0,    ml:80},
+  {id:54, name:"Crema di Cocco", cat:"Altro",       color:"rgba(255,252,240,0.9)",abv:0,    ml:30},
+  {id:55, name:"Albume",         cat:"Altro",       color:"rgba(255,252,245,0.6)",abv:0,    ml:20},
+  {id:56, name:"Menta",          cat:"Erbe & Frutta",color:"rgba(80,170,90,0.45)",abv:0,    ml:5 },
+  {id:57, name:"Basilico",       cat:"Erbe & Frutta",color:"rgba(70,150,70,0.45)",abv:0,    ml:5 },
+  {id:58, name:"Fragole",        cat:"Erbe & Frutta",color:"#D7263D",             abv:0,    ml:20},
+  {id:59, name:"Cetriolo",       cat:"Erbe & Frutta",color:"rgba(160,210,140,0.5)",abv:0,   ml:10},
 ];
 
 export const INGREDIENT_CATEGORIES = [
-  'Tutti', 'Bitter', 'Gin', 'Vodka', 'Rum', 'Tequila', 'Whisky',
-  'Vino', 'Liquori', 'Succhi', 'Sciroppi', 'Soft Drinks', 'Altro',
+  'Tutti', 'Bitter', 'Gin', 'Vodka', 'Rum', 'Tequila', 'Whisky', 'Brandy',
+  'Vino', 'Liquori', 'Succhi', 'Sciroppi', 'Soft Drinks', 'Erbe & Frutta', 'Altro',
 ] as const;
 
 export type IngredientCategory = typeof INGREDIENT_CATEGORIES[number];
@@ -938,11 +968,18 @@ export const getCocktailById = (id: number): Cocktail | undefined =>
 
 /** Slugify a cocktail name for URLs */
 export const slugifyName = (name: string): string =>
-  name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  name.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')   // "Piña" → "pina"
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+const BY_SLUG = new Map<string, Cocktail>();
 
 /** Return cocktail by slug */
-export const getCocktailBySlug = (slug: string): Cocktail | undefined =>
-  COCKTAILS.find(c => slugifyName(c.name) === slug);
+export const getCocktailBySlug = (slug: string): Cocktail | undefined => {
+  if (!BY_SLUG.size) COCKTAILS.forEach(c => BY_SLUG.set(slugifyName(c.name), c));
+  return BY_SLUG.get(slug);
+};
+
+export const cocktailHref = (c: Pick<Cocktail, 'name'>) => `/cocktails/${slugifyName(c.name)}`;
 
 /** All categories (including meta-filters) */
 export const COCKTAIL_CATEGORIES = [

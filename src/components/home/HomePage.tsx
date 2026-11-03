@@ -1,191 +1,123 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// BALDI'S LAB — Home Page + Ambient Decor
+// BALDI'S LAB — Home Page
 // src/components/home/HomePage.tsx
 // ─────────────────────────────────────────────────────────────────────────────
-'use client';
 
-import { useRouter }    from 'next/navigation';
-import { GlassSVG }     from '@/components/glass/GlassSVG';
+import Link from 'next/link';
+import { CocktailArt }  from '@/components/cocktail/CocktailArt';
 import { CocktailCard } from '@/components/cocktail/CocktailCard';
-import { useApp }       from '@/context/AppContext';
-import { GLASSES, COCKTAILS } from '@/lib/data';
-import type { ThemeId } from '@/lib/themes';
+import { Icon }         from '@/components/ui/Icon';
+import type { IconName } from '@/components/ui/Icon';
+import { COCKTAILS, GLASSES, COCKTAIL_CATEGORIES, getCocktailById } from '@/lib/data';
 
-// ── AMBIENT DECOR (seasonal floating glyphs) ─────────────────────────────────
+const FEATURED_IDS = [1, 5, 3, 6, 2, 9, 8, 4];
 
-interface AmbientDecorProps { theme: ThemeId; }
-
-export function AmbientDecor({ theme }: AmbientDecorProps) {
-  const configs: Record<string, { chars: string[]; count: number; opacity: number; color: string }> = {
-    winter:    { chars: ['❄','✦','❅','·'], count: 14, opacity: 0.22, color: 'rgba(168,216,240,' },
-    halloween: { chars: ['◆','⬡','✦','◇'], count: 10, opacity: 0.18, color: 'rgba(255,107,0,'  },
-    christmas: { chars: ['✦','★','❄','·'], count: 12, opacity: 0.20, color: 'rgba(255,215,0,'  },
-    summer:    { chars: ['✦','○','◆','·'], count: 8,  opacity: 0.16, color: 'rgba(255,179,71,' },
-  };
-
-  const cfg = configs[theme];
-  if (!cfg) return null;
-
-  return (
-    <div style={{ position: 'fixed', inset: 0, overflow: 'hidden', pointerEvents: 'none', zIndex: 0 }}>
-      {Array.from({ length: cfg.count }, (_, i) => {
-        const x     = (i * 17 + 5) % 92;
-        const y     = (i * 23 + 12) % 88;
-        const size  = 9 + (i % 4) * 5;
-        const dur   = 3.5 + (i % 4);
-        const delay = i * 0.38;
-        return (
-          <div key={i} style={{
-            position: 'absolute', left: `${x}%`, top: `${y}%`,
-            color: `${cfg.color}${cfg.opacity})`, fontSize: size,
-            animation: `floatGlass ${dur}s ease-in-out ${delay}s infinite`,
-            userSelect: 'none', fontFamily: 'serif',
-          }}>
-            {cfg.chars[i % cfg.chars.length]}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-// ── FEATURE CARDS DATA (real routes) ──────────────────────────────────────────
-
-const FEATURES = [
-  { icon: '🤖', title: 'AI Bartender', desc: "Chiedi all'intelligenza artificiale di creare il cocktail perfetto per te.",        cta: 'Prova ora',  href: '/ai' },
-  { icon: '🧪', title: 'Simulatore',    desc: 'Costruisci visivamente il tuo cocktail con animazioni in tempo reale.',              cta: 'Apri il Lab', href: '/simulator' },
-  { icon: '📚', title: 'Enciclopedia',  desc: 'Tecniche, ingredienti, storia. Tutto ciò che serve per diventare un maestro.',        cta: 'Scopri',      href: '/encyclopedia' },
+const TOOLS: { icon: IconName; title: string; desc: string; href: string; cta: string }[] = [
+  { icon: 'flask',   title: 'Laboratorio', href: '/simulator', cta: 'Apri il Lab',
+    desc: 'Versa, mescola, shakera. Livelli calcolati sul volume reale del bicchiere, ABV con diluizione, riconoscimento automatico della ricetta.' },
+  { icon: 'sparkle', title: 'AI Bartender', href: '/ai', cta: 'Chiedi',
+    desc: 'Dimmi cosa hai in frigo o che serata vuoi: ti propongo il drink giusto, con dosi e tecnica.' },
+  { icon: 'cabinet', title: 'Il mio bar', href: '/cabinet', cta: 'Organizza',
+    desc: 'Segna le bottiglie che hai: vedi subito cosa puoi preparare e cosa ti manca per il prossimo.' },
 ];
 
-// ── HOME PAGE ─────────────────────────────────────────────────────────────────
-// No props needed — reads theme/favorites/modal straight from AppContext,
-// navigates via the real Next.js router. Rendered from
-// src/app/(app)/home/page.tsx
-
 export default function HomePage() {
-  const router = useRouter();
-  const { t, theme, favorites, toggleFav, openModal } = useApp();
-
-  const heroLayers = [
-    { name: 'Gin',          amount: 30, color: 'rgba(210,235,255,0.6)' },
-    { name: 'Campari',      amount: 30, color: '#C0392B'               },
-    { name: 'Vermut Rosso', amount: 30, color: '#8B2020'               },
-  ];
+  const hero = getCocktailById(1)!;
+  const featured = FEATURED_IDS.map(id => getCocktailById(id)!).filter(Boolean);
+  const categories = COCKTAIL_CATEGORIES.filter(c => c !== 'Tutti' && c !== 'Preferiti');
 
   return (
     <div>
-
-      {/* ── HERO ───────────────────────────────────────────────────────── */}
-      <section style={{
-        minHeight: '100vh', display: 'flex', alignItems: 'center',
-        padding: '80px 24px 40px', maxWidth: 1300, margin: '0 auto',
-        gap: 40, flexWrap: 'wrap',
-      }}>
-        <div style={{ flex: '1 1 420px', minWidth: 280 }}>
-          <div style={{
-            fontSize: 11, letterSpacing: '0.25em', color: t.gold,
-            fontFamily: 'Raleway, sans-serif', fontWeight: 600,
-            textTransform: 'uppercase', marginBottom: 20, opacity: 0.85,
-          }}>
-            Laboratorio Digitale di Mixology
-          </div>
-
-          <h1 style={{ fontFamily: 'Cormorant Garamond, serif', fontSize: 'clamp(60px,8vw,100px)', lineHeight: 0.9, fontWeight: 600, marginBottom: 8, color: t.text }}>
-            BALDI'S
+      {/* ── HERO ─────────────────────────────────────────────────────────── */}
+      <section className="wrap grid items-center gap-10 pb-16 pt-10 md:grid-cols-[1.1fr_1fr] md:pt-16 lg:gap-16">
+        <div className="animate-fade-up">
+          <div className="eyebrow">Laboratorio digitale di mixology</div>
+          <h1 className="mt-5 font-display text-[clamp(52px,8vw,104px)] font-light leading-[0.92] tracking-[-0.02em]">
+            Il bancone<br />
+            è <em className="font-normal italic text-accent">tuo</em>.
           </h1>
-          <h1 style={{ fontFamily: 'Cormorant Garamond, serif', fontSize: 'clamp(60px,8vw,100px)', lineHeight: 0.9, fontWeight: 300, marginBottom: 32, color: t.gold, fontStyle: 'italic' }}>
-            LAB
-          </h1>
-
-          <div style={{ width: 60, height: 1, background: t.gold, marginBottom: 32, opacity: 0.6 }} />
-
-          <p style={{ fontSize: 17, lineHeight: 1.7, color: t.textMuted, maxWidth: 460, marginBottom: 36, fontFamily: 'Raleway, sans-serif', fontWeight: 300 }}>
-            Un laboratorio premium dove la scienza incontra l'arte.
-            Crea, esplora e perfeziona ogni cocktail con strumenti da professionista.
+          <p className="mt-7 max-w-[34rem] text-[17px] leading-relaxed text-muted">
+            {COCKTAILS.length} ricette classiche e contemporanee, un simulatore che rispetta la fisica
+            del bicchiere e un bartender AI sempre disponibile.
           </p>
-
-          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
-            <button
-              onClick={() => router.push('/simulator')}
-              style={{
-                background: `linear-gradient(135deg,${t.copper},${t.gold})`, border: 'none',
-                color: theme === 'night' ? '#0a0810' : '#2a1808', cursor: 'pointer',
-                fontFamily: 'Raleway, sans-serif', fontWeight: 700, letterSpacing: '0.1em',
-                textTransform: 'uppercase', fontSize: 12, padding: '14px 32px', borderRadius: 4,
-                boxShadow: `0 4px 24px rgba(${t.goldRgb},0.35)`, transition: 'all 0.3s',
-              }}
-            >
-              Apri il Laboratory
-            </button>
-            <button
-              onClick={() => router.push('/cocktails')}
-              style={{
-                background: 'none', border: `1px solid ${t.gold}`, color: t.gold, cursor: 'pointer',
-                fontFamily: 'Raleway, sans-serif', fontWeight: 600, letterSpacing: '0.08em',
-                textTransform: 'uppercase', fontSize: 12, padding: '14px 32px', borderRadius: 4,
-                transition: 'all 0.3s',
-              }}
-            >
-              Esplora i Cocktail
-            </button>
+          <div className="mt-9 flex flex-wrap gap-3">
+            <Link href="/simulator" className="btn-primary px-6 py-3">
+              <Icon name="flask" size={17} /> Apri il Laboratorio
+            </Link>
+            <Link href="/cocktails" className="btn-ghost px-6 py-3">Sfoglia le ricette</Link>
           </div>
+          <dl className="mt-12 grid max-w-md grid-cols-3 gap-6 border-t border-line/10 pt-6">
+            {[
+              [String(COCKTAILS.length), 'ricette'],
+              [String(Object.keys(GLASSES).length), 'bicchieri'],
+              ['6', 'temi'],
+            ].map(([v, l]) => (
+              <div key={l}>
+                <dt className="sr-only">{l}</dt>
+                <dd className="font-display text-4xl">{v}</dd>
+                <dd className="mt-1 text-xs uppercase tracking-[0.16em] text-muted">{l}</dd>
+              </div>
+            ))}
+          </dl>
         </div>
 
-        {/* Hero glass */}
-        <div style={{ flex: '0 0 auto', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
-          <div style={{ animation: 'floatGlass 4s ease-in-out infinite' }}>
-            <GlassSVG gDef={GLASSES.oldfashioned} layers={heroLayers} ice="cubes" size={220} />
-          </div>
-          <div style={{ fontFamily: 'Cormorant Garamond, serif', fontSize: 14, color: t.textMuted, letterSpacing: '0.1em', textTransform: 'uppercase', fontStyle: 'italic' }}>
-            Negroni
-          </div>
-        </div>
-      </section>
-
-      {/* ── FEATURED COCKTAILS ─────────────────────────────────────────── */}
-      <section style={{ padding: '60px 24px', maxWidth: 1300, margin: '0 auto' }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 36, flexWrap: 'wrap', gap: 12 }}>
-          <h2 style={{ fontFamily: 'Cormorant Garamond, serif', fontSize: 38, fontWeight: 600, color: t.text, letterSpacing: '0.02em' }}>
-            Cocktail in Evidenza
-          </h2>
-          <button
-            onClick={() => router.push('/cocktails')}
-            style={{ background: 'none', border: 'none', color: t.gold, cursor: 'pointer', fontFamily: 'Raleway, sans-serif', fontSize: 13, letterSpacing: '0.06em', fontWeight: 500, textDecoration: 'underline', textUnderlineOffset: 3 }}
-          >
-            Vedi tutti →
-          </button>
-        </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: 20 }}>
-          {COCKTAILS.slice(0, 8).map(c => (
-            <CocktailCard key={c.id} cocktail={c} t={t} onClick={() => openModal(c)} favorites={favorites} onToggleFav={toggleFav} />
-          ))}
-        </div>
-      </section>
-
-      {/* ── FEATURES ───────────────────────────────────────────────────── */}
-      <section style={{ padding: '60px 24px 80px', maxWidth: 1300, margin: '0 auto' }}>
-        <div style={{ width: 50, height: 1, background: t.gold, margin: '0 auto 20px', opacity: 0.5 }} />
-        <h2 style={{ fontFamily: 'Cormorant Garamond, serif', fontSize: 38, fontWeight: 600, color: t.text, textAlign: 'center', marginBottom: 48, letterSpacing: '0.02em' }}>
-          Strumenti da Professionista
-        </h2>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(280px,1fr))', gap: 24 }}>
-          {FEATURES.map(f => (
-            <div
-              key={f.href}
-              className="feat-card"
-              onClick={() => router.push(f.href)}
-              style={{ background: t.card, border: `1px solid ${t.border}`, borderRadius: 16, padding: '36px 28px', textAlign: 'center', transition: 'all 0.3s', cursor: 'pointer' }}
-            >
-              <div style={{ fontSize: 44, marginBottom: 16 }}>{f.icon}</div>
-              <h3 style={{ fontFamily: 'Cormorant Garamond, serif', fontSize: 24, color: t.text, marginBottom: 12 }}>{f.title}</h3>
-              <p style={{ fontFamily: 'Raleway, sans-serif', fontSize: 14, color: t.textMuted, lineHeight: 1.65, marginBottom: 20 }}>{f.desc}</p>
-              <span style={{ fontFamily: 'Raleway, sans-serif', fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: t.gold }}>{f.cta} →</span>
+        <Link href="/cocktails/negroni" className="group relative mx-auto block w-full max-w-[460px]">
+          <CocktailArt cocktail={hero} className="aspect-[4/5] w-full rounded-[28px] border border-line/10" />
+          <div className="absolute inset-x-5 bottom-5 flex items-end justify-between rounded-2xl bg-black/45 p-4 text-white">
+            <div>
+              <div className="text-[11px] uppercase tracking-[0.2em] text-white/60">Firenze, {hero.year}</div>
+              <div className="font-display text-3xl">{hero.name}</div>
             </div>
+            <span className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10 transition-transform group-hover:translate-x-1">
+              <Icon name="arrow" />
+            </span>
+          </div>
+        </Link>
+      </section>
+
+      {/* ── CATEGORIES ───────────────────────────────────────────────────── */}
+      <section className="wrap">
+        <div className="no-scrollbar -mx-5 flex gap-2 overflow-x-auto px-5 sm:mx-0 sm:flex-wrap sm:px-0">
+          {categories.map(c => (
+            <Link key={c} href={`/cocktails?cat=${encodeURIComponent(c)}`} className="chip">{c}</Link>
           ))}
         </div>
       </section>
 
+      {/* ── FEATURED ─────────────────────────────────────────────────────── */}
+      <section className="wrap mt-16">
+        <div className="mb-8 flex items-end justify-between gap-4">
+          <div>
+            <div className="eyebrow">Selezione</div>
+            <h2 className="mt-2 font-display text-4xl sm:text-5xl">I grandi classici</h2>
+          </div>
+          <Link href="/cocktails" className="btn-quiet hidden sm:inline-flex">Tutte le ricette <Icon name="arrow" size={16} /></Link>
+        </div>
+        <div className="grid grid-cols-2 gap-3 sm:gap-5 lg:grid-cols-4">
+          {featured.map((c, i) => <CocktailCard key={c.id} cocktail={c} priority={i < 4} />)}
+        </div>
+      </section>
+
+      {/* ── TOOLS ────────────────────────────────────────────────────────── */}
+      <section className="wrap mt-24">
+        <div className="eyebrow">Strumenti</div>
+        <h2 className="mt-2 max-w-xl font-display text-4xl sm:text-5xl">Tutto quello che serve dietro il bancone</h2>
+        <div className="mt-10 grid gap-4 md:grid-cols-3">
+          {TOOLS.map((f, i) => (
+            <Link key={f.href} href={f.href} className="card card-hover group flex flex-col p-7">
+              <div className="flex items-center justify-between">
+                <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-accent/10 text-accent"><Icon name={f.icon} size={22} /></span>
+                <span className="font-display text-sm text-muted">0{i + 1}</span>
+              </div>
+              <h3 className="mt-6 font-display text-3xl">{f.title}</h3>
+              <p className="mt-3 flex-1 text-[15px] leading-relaxed text-muted">{f.desc}</p>
+              <span className="mt-6 inline-flex items-center gap-2 text-sm font-semibold text-accent">
+                {f.cta} <Icon name="arrow" size={16} className="transition-transform group-hover:translate-x-1" />
+              </span>
+            </Link>
+          ))}
+        </div>
+      </section>
     </div>
   );
 }

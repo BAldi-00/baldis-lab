@@ -5,94 +5,54 @@
 
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
-import {
-  getCocktailBySlug,
-  COCKTAILS,
-  slugifyName,
-} from '@/lib/data';
+import { getCocktailBySlug, COCKTAILS, slugifyName } from '@/lib/data';
 import CocktailDetailClient from './CocktailDetailClient';
 
-// ── STATIC GENERATION ─────────────────────────────────────────────────────────
+export const dynamicParams = false;
 
-/** Called at build time — pre-renders one page per cocktail */
+/** Pre-render one page per cocktail at build time */
 export function generateStaticParams() {
   return COCKTAILS.map(c => ({ slug: slugifyName(c.name) }));
 }
 
-/** Per-page metadata for SEO */
-export async function generateMetadata(
-  { params }: { params: Promise<{ slug: string }> }
-): Promise<Metadata> {
+export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
   const { slug } = await params;
-
   const c = getCocktailBySlug(slug);
-
-  if (!c) {
-    return { title: 'Cocktail non trovato' };
-  }
-
+  if (!c) return { title: 'Cocktail non trovato' };
   return {
-    title: `${c.name} — Ricetta | Baldi's Lab`,
+    title: `${c.name} — ricetta`,
     description: c.desc,
-
-    openGraph: {
-      type: 'article',
-      title: c.name,
-      description: c.desc,
-      images: [`/og/cocktails/${slug}.png`],
-    },
-
-    twitter: {
-      card: 'summary_large_image',
-      title: `${c.name} · Baldi's Lab`,
-      description: c.desc,
-    },
-
-    // JSON-LD structured data → Google Recipe rich results
-    other: {
-      'script:ld+json': JSON.stringify({
-        '@context': 'https://schema.org',
-        '@type': 'Recipe',
-        name: c.name,
-        description: c.desc,
-        prepTime: `PT${c.time}M`,
-        recipeYield: '1 cocktail',
-        recipeCategory: c.cat,
-        keywords: c.tags.join(', '),
-        recipeIngredient: c.ings.map(
-          i => `${i.amount} ml ${i.name}`
-        ),
-        recipeInstructions: [
-          {
-            '@type': 'HowToStep',
-            text: c.method,
-          },
-        ],
-        nutrition: {
-          '@type': 'NutritionInformation',
-          calories: `${c.cal} calories`,
-        },
-        author: {
-          '@type': 'Organization',
-          name: "Baldi's Lab",
-        },
-      }),
-    },
+    alternates: { canonical: `/cocktails/${slug}` },
+    openGraph: { type: 'article', title: c.name, description: c.desc },
+    twitter: { card: 'summary', title: `${c.name} · Baldi's Lab`, description: c.desc },
   };
 }
 
-// ── SERVER COMPONENT ──────────────────────────────────────────────────────────
-
-export default async function CocktailDetailPage(
-  { params }: { params: Promise<{ slug: string }> }
-) {
+export default async function CocktailDetailPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
+  const c = getCocktailBySlug(slug);
+  if (!c) notFound();
 
-  const cocktail = getCocktailBySlug(slug);
+  // Google Recipe rich results (must be a <script>, not a meta tag)
+  const jsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'Recipe',
+    name: c.name,
+    description: c.desc,
+    prepTime: `PT${c.time}M`,
+    recipeYield: '1 cocktail',
+    recipeCategory: c.cat,
+    keywords: c.tags.join(', '),
+    recipeIngredient: c.ings.map(i => `${i.amount} ml ${i.name}`),
+    recipeInstructions: [{ '@type': 'HowToStep', text: c.method }],
+    nutrition: { '@type': 'NutritionInformation', calories: `${c.cal} calories` },
+    author: { '@type': 'Organization', name: "Baldi's Lab" },
+  };
 
-  if (!cocktail) {
-    notFound();
-  }
-
-  return <CocktailDetailClient cocktail={cocktail} />;
+  return (
+    <>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd).replace(/</g, '\\u003c') }} />
+      <CocktailDetailClient cocktail={c} />
+    </>
+  );
 }
